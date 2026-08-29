@@ -133,6 +133,28 @@ test("registers only compress and acp_context provider tools", () => {
   assert.deepEqual(pi.tools.map((tool) => tool.name), ["compress", "acp_context"]);
 });
 
+test("cooperates with an optional collapsed-display service without a local file dependency", () => {
+  const serviceKey = Symbol.for("@local/pi-collapsed-tools.display-service.v1");
+  const previous = globalThis[serviceKey];
+  const decorated = [];
+  globalThis[serviceKey] = {
+    version: 1,
+    decorate(tool) {
+      decorated.push(tool.name);
+      return tool;
+    },
+  };
+
+  try {
+    const pi = createPi();
+    createLeanAcpExtension(fakeUpstream())(pi);
+    assert.deepEqual(decorated, ["compress", "acp_context"]);
+  } finally {
+    if (previous === undefined) delete globalThis[serviceKey];
+    else globalThis[serviceKey] = previous;
+  }
+});
+
 test("keeps compress direct, retains concise critical descriptions, and rewrites stale status advice", async () => {
   const calls = [];
   const pi = createPi();
