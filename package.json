@@ -1,0 +1,33 @@
+{
+  "name": "billion-context-pi-lean",
+  "version": "0.1.52-lean.1",
+  "private": true,
+  "type": "module",
+  "description": "Token-lean Pi facade for billion-context-pi with the full upstream context engine.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kunkun9527/billion-context-pi-lean.git"
+  },
+  "homepage": "https://github.com/kunkun9527/billion-context-pi-lean#readme",
+  "bugs": {
+    "url": "https://github.com/kunkun9527/billion-context-pi-lean/issues"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "billion-context-pi": "0.1.52",
+    "typebox": "1.3.7"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
