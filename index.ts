@@ -7,25 +7,6 @@ import { createAcpExtension } from "billion-context-pi";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-const COLLAPSED_DISPLAY_SERVICE = Symbol.for(
-  "@local/pi-collapsed-tools.display-service.v1",
-);
-
-type CollapsedDisplayTool = { name: string };
-type CollapsedDisplayService = {
-  readonly version: 1;
-  decorate<T extends CollapsedDisplayTool>(tool: T): T;
-};
-
-function decorateWithCollapsedDisplay<T extends CollapsedDisplayTool>(tool: T): T {
-  const services = globalThis as unknown as Record<PropertyKey, unknown>;
-  const candidate = services[COLLAPSED_DISPLAY_SERVICE];
-  if (!candidate || typeof candidate !== "object") return tool;
-  const service = candidate as Partial<CollapsedDisplayService>;
-  return service.version === 1 && typeof service.decorate === "function"
-    ? service.decorate(tool)
-    : tool;
-}
 
 const LEAN_SYSTEM_PROMPT = `ACP context management
 - User/tool messages carry hidden <acp> refs such as m00123. Never echo the XML tags; use only refs in ACP tool calls.
@@ -234,10 +215,10 @@ export function createLeanAcpExtension(
             }
             if (tool.name === "compress") {
               compactCompressSchemaDescriptions(tool.parameters);
-              target.registerTool(decorateWithCollapsedDisplay(wrapCompress(tool)));
+              target.registerTool(wrapCompress(tool));
               return;
             }
-            target.registerTool(decorateWithCollapsedDisplay(tool));
+            target.registerTool(tool);
           };
         }
         if (property === "on") {
@@ -258,7 +239,7 @@ export function createLeanAcpExtension(
     });
 
     upstream(leanPi);
-    pi.registerTool(decorateWithCollapsedDisplay(facadeTool(tools)));
+    pi.registerTool(facadeTool(tools));
   };
 }
 
