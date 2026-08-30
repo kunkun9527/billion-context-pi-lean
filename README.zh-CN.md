@@ -56,6 +56,19 @@ acp_context
 
 仅在需要时使用 `help` 获取上游操作 schema。
 
+## 实测初始化上下文占用
+
+仅启用本扩展时，lean 包装层会贡献约 **675 tokens** 的持续模型可见初始化上下文：
+
+| 项目 | Lean | 上游 `billion-context-pi@0.1.52` |
+| --- | ---: | ---: |
+| `compress` | 216 | 549 |
+| 上下文操作 | `acp_context`：90 | `decompress` + `search_context` + `acp_status`：1,095 |
+| 系统提示词增量 | 369 | 4,417 |
+| **合计** | **675** | **6,061** |
+
+相比固定版本的上游扩展，减少 **5,386 tokens（88.9%）**。测量使用 Pi 0.84.4 和 `pi-context-view@0.4.3`，在全新隔离会话中只启用目标扩展，并排除 Pi 内置工具、skills、context files、消息及无关扩展。Context View 按 `ceil(字符数 / 4)` 估算，因此这些是可复现的上下文占用估值，不是 GPT tokenizer 的精确计数。未计入不会发送给模型的纯运行时 UI 和 slash commands。
+
 ## 开发
 
 ```bash
