@@ -56,6 +56,19 @@ acp_context
 
 Use `help` to request an upstream operation schema only when needed.
 
+## Measured initialization footprint
+
+With only this extension enabled, the lean wrapper contributes an estimated **675 tokens** of recurring model-facing initialization context:
+
+| Item | Lean | Upstream `billion-context-pi@0.1.52` |
+| --- | ---: | ---: |
+| `compress` | 216 | 549 |
+| Context operations | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
+| System-prompt additions | 369 | 4,417 |
+| **Total** | **675** | **6,061** |
+
+That is **5,386 fewer tokens (88.9%)** than the pinned upstream extension. The measurement used Pi 0.84.4 and `pi-context-view@0.4.3` in a fresh isolated session, excluding Pi built-in tools, skills, context files, messages, and unrelated extensions. Context View estimates text as `ceil(characters / 4)`, so these are reproducible context-footprint estimates rather than exact GPT tokenizer counts. Runtime-only UI and slash commands are not included because they are not sent to the model.
+
 ## Development
 
 ```bash
