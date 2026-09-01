@@ -2,22 +2,21 @@
 
 [简体中文](README.zh-CN.md)
 
-A token-lean Pi wrapper around [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi). It keeps the upstream context engine while reducing persistent system-prompt and tool-schema overhead.
+A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi). It retains the upstream context compression engine while eliminating persistent system prompt bloat and redundant tool schemas.
 
-## What it keeps
+## Core Features
 
-- Context compression, hierarchical summaries, nudges, overflow recovery, retry handling, and tool protection from upstream.
-- The high-frequency `compress` tool as a direct model-facing tool.
-- `decompress`, `search_context`, and `acp_status` through one on-demand `acp_context` facade.
-- Concise ACP instructions that retain the rules needed for safe compression and recovery.
+* Full compression engine: Keeps upstream context compression, hierarchical summaries, nudges, overflow recovery, retry handling, and tool protection.
+* Streamlined tool surface: Exposes the high-frequency `compress` tool directly, while consolidating `decompress`, `search_context`, and `acp_status` into an on-demand `acp_context` interface.
+* Focused and clean: Disables built-in delegation and auto-updates by design. For delegation workflows, pair with a dedicated subagent plugin.
 
-Built-in ACP delegation and automatic updates are intentionally disabled. Use a dedicated subagent extension if you need delegation. The upstream dependency is pinned to `billion-context-pi@0.1.52` for predictable behavior.
+Upstream dependency is pinned to `billion-context-pi@0.1.52` for reliable behavior.
 
-## Why it is lean
+## Context Savings
 
-In a local comparison against `billion-context-pi@0.1.52` with delegation disabled, fixed ACP prompt and tool metadata decreased from about 22,645 characters to about 2,859 characters—roughly 87% less persistent text. Actual token and cost savings depend on the model tokenizer, provider, and prompt caching.
+In a local comparison against `billion-context-pi@0.1.52` with delegation disabled, persistent ACP prompt and tool metadata dropped from roughly 22,645 characters to 2,859 characters, achieving an approximate 87% reduction in static text overhead. Actual token savings may vary based on model tokenizer and prompt caching behavior.
 
-## Install
+## Installation
 
 ```bash
 pi install git:github.com/kunkun9527/billion-context-pi-lean
@@ -32,11 +31,11 @@ npm install
 pi install ./
 ```
 
-Do not load this wrapper together with another `billion-context-pi` extension entry, or the ACP tools and hooks may be registered twice.
+Do not load this wrapper alongside another `billion-context-pi` extension to prevent registering duplicate tools or hooks.
 
-## Use
+## Usage
 
-Model-facing tools:
+The model interacts with two tools:
 
 ```text
 compress
@@ -54,20 +53,22 @@ acp_context
 }
 ```
 
-Use `help` to request an upstream operation schema only when needed.
+Use `help` only when you need to inspect the full upstream schema.
 
-## Measured initialization footprint
+## Context Footprint Benchmark
 
-With only this extension enabled, the lean wrapper contributes an estimated **675 tokens** of recurring model-facing initialization context:
+With only this extension enabled, its recurring initialization overhead in the model context is:
 
 | Item | Lean | Upstream `billion-context-pi@0.1.52` |
 | --- | ---: | ---: |
 | `compress` | 216 | 549 |
 | Context operations | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
-| System-prompt additions | 369 | 4,417 |
+| System prompt additions | 369 | 4,417 |
 | **Total** | **675** | **6,061** |
 
-That is **5,386 fewer tokens (88.9%)** than the pinned upstream extension. The measurement used Pi 0.84.4 and `pi-context-view@0.4.3` in a fresh isolated session, excluding Pi built-in tools, skills, context files, messages, and unrelated extensions. Context View estimates text as `ceil(characters / 4)`, so these are reproducible context-footprint estimates rather than exact GPT tokenizer counts. Runtime-only UI and slash commands are not included because they are not sent to the model.
+This saves **5,386 tokens (88.9%)** compared to the pinned upstream package.
+
+The benchmark was measured on Pi 0.84.4 with `pi-context-view@0.4.3` in a fresh isolated session, excluding built-in tools, skills, context files, and unrelated extensions. Context View estimates tokens as `ceil(characters / 4)`. Pure runtime UI elements and slash commands are excluded as they are not sent to the model.
 
 ## Development
 
@@ -76,6 +77,6 @@ npm ci
 npm run check
 ```
 
-## License and upstream
+## License
 
 MIT. This wrapper builds on the MIT-licensed [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi).

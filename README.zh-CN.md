@@ -2,20 +2,17 @@
 
 [English](README.md)
 
-[`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi) 的 token 精简版 Pi 包装层。它保留上游上下文引擎，同时减少长期存在的系统提示词和工具 schema 开销。
+基于 [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi) 的精简封装。在完整保留上下文压缩引擎的同时，大幅剔除系统提示词与工具 Schema 中的冗余文本，显著降低上下文初始开销。
 
-## 保留的能力
+## 核心特性
 
-- 上游的上下文压缩、分层摘要、nudge、溢出恢复、重试处理和工具保护。
-- 将高频 `compress` 作为直接面向模型的工具。
-- 通过一个按需使用的 `acp_context` facade 提供 `decompress`、`search_context` 和 `acp_status`。
-- 精简 ACP 指令，同时保留安全压缩和恢复所需的规则。
+* 完整上下文引擎：保留上游的对话历史压缩、分层摘要、主动提示（Nudge）、溢出恢复、重试机制与工具保护能力。
+* 优化工具布局：高频使用的 `compress` 工具直接对外暴露，其余 `decompress`、`search_context` 与 `acp_status` 操作整合为按需调用的 `acp_context` 入口。
+* 纯粹专注：主动移除了内置的 Delegation 代理分发与自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.52`，确保运行稳定可靠。
 
-上游内置的 ACP delegation 和自动更新被有意关闭。需要 delegation 时请搭配独立的 subagent 扩展。上游依赖固定为 `billion-context-pi@0.1.52`，以保证行为可预测。
+## 精简优化成效
 
-## 为什么更精简
-
-在关闭 delegation 的情况下，与 `billion-context-pi@0.1.52` 进行本地对比，固定 ACP 提示词和工具元数据从约 22,645 个字符降至约 2,859 个字符，长期文本约减少 87%。实际 token 和费用收益取决于模型 tokenizer、供应商和提示缓存。
+在关闭 Delegation 的情况下，与原版 `billion-context-pi@0.1.52` 本地对比：固定的 ACP 系统提示词与工具元数据字符量从约 22,645 字符大幅缩减至 2,859 字符，常驻静态文本减少约 87%。实际 Token 节省情况会因模型分词器及 Prompt 缓存机制而略有差异。
 
 ## 安装
 
@@ -23,7 +20,7 @@
 pi install git:github.com/kunkun9527/billion-context-pi-lean
 ```
 
-也可以从本地 clone 安装：
+也可以通过本地克隆进行安装：
 
 ```bash
 git clone https://github.com/kunkun9527/billion-context-pi-lean.git
@@ -32,11 +29,11 @@ npm install
 pi install ./
 ```
 
-不要同时加载本包装层和另一个 `billion-context-pi` 扩展入口，否则 ACP 工具和 hooks 可能被重复注册。
+请勿与其它 `billion-context-pi` 扩展同时加载，以防重复注册 ACP 工具与生命周期 Hooks。
 
-## 使用
+## 使用方法
 
-模型可见工具：
+模型可见工具包括：
 
 ```text
 compress
@@ -54,28 +51,30 @@ acp_context
 }
 ```
 
-仅在需要时使用 `help` 获取上游操作 schema。
+仅在确需查看完整上游 Schema 时调用 `help`。
 
-## 实测初始化上下文占用
+## 初始化上下文占用对比
 
-仅启用本扩展时，lean 包装层会贡献约 **675 tokens** 的持续模型可见初始化上下文：
+单独启用本插件时，注入到模型初始上下文中的 Token 占用实测如下：
 
-| 项目 | Lean | 上游 `billion-context-pi@0.1.52` |
+| 项目 | Lean 精简版 | 原版 `billion-context-pi@0.1.52` |
 | --- | ---: | ---: |
 | `compress` | 216 | 549 |
-| 上下文操作 | `acp_context`：90 | `decompress` + `search_context` + `acp_status`：1,095 |
+| 上下文检索与操作 | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
 | 系统提示词增量 | 369 | 4,417 |
 | **合计** | **675** | **6,061** |
 
-相比固定版本的上游扩展，减少 **5,386 tokens（88.9%）**。测量使用 Pi 0.84.4 和 `pi-context-view@0.4.3`，在全新隔离会话中只启用目标扩展，并排除 Pi 内置工具、skills、context files、消息及无关扩展。Context View 按 `ceil(字符数 / 4)` 估算，因此这些是可复现的上下文占用估值，不是 GPT tokenizer 的精确计数。未计入不会发送给模型的纯运行时 UI 和 slash commands。
+相比固定版本的上游扩展，初始开销减少了 **5,386 tokens（88.9%）**。
 
-## 开发
+测试环境为 Pi 0.84.4 与 `pi-context-view@0.4.3` 独立会话，排除了 Pi 内置工具、Skills、上下文文件与无关扩展。Context View 按 `ceil(字符数 / 4)` 估算。未计入不会发送给模型的纯运行时 UI 与 Slash 命令。
+
+## 本地开发
 
 ```bash
 npm ci
 npm run check
 ```
 
-## 许可证与上游
+## 开源协议与致谢
 
-MIT。本包装层基于采用 MIT 许可证的 [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi)。
+MIT 协议。本包装层基于采用 MIT 协议的 [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi)。
