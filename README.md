@@ -8,7 +8,7 @@ A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxiangl
 
 * Full compression engine: Keeps upstream context compression, hierarchical summaries, nudges, overflow recovery, retry handling, and tool protection.
 * Streamlined tool surface: Exposes the high-frequency `compress` tool directly, while consolidating `decompress`, `search_context`, and `acp_status` into an on-demand `acp_context` interface.
-* Focused and clean: Disables built-in delegation and auto-updates by design. For delegation workflows, pair with a dedicated subagent extension.
+* Focused and clean: Removes the built-in subagent (delegation) feature — the `acp_delegate*` tools, the `/acp-subagents` command, and delegate usage noise — along with auto-updates, by design. For delegation workflows, pair with a dedicated subagent extension.
 
 Upstream dependency is pinned to `billion-context-pi@0.1.52` for reliable behavior.
 
