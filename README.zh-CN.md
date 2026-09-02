@@ -17,13 +17,13 @@
 ## 安装
 
 ```bash
-pi install git:github.com/kunkun9527/billion-context-pi-lean-Notsub
+pi install git:github.com/miko-mepro/billion-context-pi-lean-Notsub
 ```
 
 也可以通过本地克隆进行安装：
 
 ```bash
-git clone https://github.com/kunkun9527/billion-context-pi-lean-Notsub.git
+git clone https://github.com/miko-mepro/billion-context-pi-lean-Notsub.git
 cd billion-context-pi-lean-Notsub
 npm install
 pi install ./

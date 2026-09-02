@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kunkun9527/billion-context-pi-lean-Notsub.git"
+    "url": "git+https://github.com/miko-mepro/billion-context-pi-lean-Notsub.git"
   },
-  "homepage": "https://github.com/kunkun9527/billion-context-pi-lean-Notsub#readme",
+  "homepage": "https://github.com/miko-mepro/billion-context-pi-lean-Notsub#readme",
   "bugs": {
-    "url": "https://github.com/kunkun9527/billion-context-pi-lean-Notsub/issues"
+    "url": "https://github.com/miko-mepro/billion-context-pi-lean-Notsub/issues"
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",

@@ -19,13 +19,13 @@ In a local comparison against `billion-context-pi@0.1.52` with delegation disabl
 ## Installation
 
 ```bash
-pi install git:github.com/kunkun9527/billion-context-pi-lean-Notsub
+pi install git:github.com/miko-mepro/billion-context-pi-lean-Notsub
 ```
 
 Or install from a local clone:
 
 ```bash
-git clone https://github.com/kunkun9527/billion-context-pi-lean-Notsub.git
+git clone https://github.com/miko-mepro/billion-context-pi-lean-Notsub.git
 cd billion-context-pi-lean-Notsub
 npm install
 pi install ./
