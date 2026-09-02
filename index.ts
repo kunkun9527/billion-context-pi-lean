@@ -1,4 +1,4 @@
-// billion-context-pi-lean: keep compress direct and route low-frequency ACP tools locally.
+// billion-context-pi-lean-Notsub: keep compress direct and route low-frequency ACP tools locally.
 import type {
   ExtensionAPI,
   ToolDefinition,
@@ -40,6 +40,40 @@ const LEAN_SYSTEM_PROMPT = `ACP context management
 const LOW_FREQUENCY_TOOLS = ["decompress", "search_context", "acp_status"] as const;
 const LOW_FREQUENCY_SET = new Set<string>(LOW_FREQUENCY_TOOLS);
 const DELEGATE_TOOLS = new Set(["acp_delegate", "acp_delegate_wait", "acp_delegate_cancel"]);
+
+// ─── 无 delegate 环境的残留清理（本环境不使用 subagent）─────────────────
+
+/** 上游注册的、仅在启用 delegate 时才有意义的斜杠命令（lean 直接丢弃）。 */
+const REMOVED_COMMANDS = new Set(["acp-subagents"]);
+
+/** acp_status 概览在 delegate 关闭时仍会输出的死噪音行（行首模式）。 */
+const DELEGATE_NOISE_RE = /^(Delegate usage:|merged mode:|── Session delegate usage)/;
+
+/** 去掉 acp_status 报告中已死的 delegate 用量尾行，并修剪尾部空白。 */
+function stripDelegateNoise(text: string): string {
+  const filtered = text.split("\n").filter((line) => !DELEGATE_NOISE_RE.test(line));
+  return filtered.join("\n").replace(/\s+$/, "");
+}
+
+/** 包装 acp_status：execute 结果文本统一过一遍噪音行过滤器。 */
+function wrapStatus(tool: CapturedTool): CapturedTool {
+  return {
+    ...tool,
+    async execute(callId, params, signal, onUpdate, ctx) {
+      const result = await tool.execute(callId, params, signal, onUpdate, ctx);
+      return {
+        ...result,
+        content: Array.isArray(result.content)
+          ? result.content.map((part) =>
+              part && part.type === "text" && typeof part.text === "string"
+                ? { ...part, text: stripDelegateNoise(part.text) }
+                : part,
+            )
+          : result.content,
+      };
+    },
+  };
+}
 
 type Operation = (typeof LOW_FREQUENCY_TOOLS)[number];
 type FacadeOperation = Operation | "help";
@@ -229,7 +263,9 @@ export function createLeanAcpExtension(
           return (tool: CapturedTool) => {
             if (DELEGATE_TOOLS.has(tool.name)) return;
             if (LOW_FREQUENCY_SET.has(tool.name)) {
-              tools.set(tool.name, tool);
+              // acp_status 在收进 facade 分发表前包上 delegate 噪音过滤：
+              // 模型只能通过 acp_context 执行 Map 里的这份，包装即全局生效。
+              tools.set(tool.name, tool.name === "acp_status" ? wrapStatus(tool) : tool);
               return;
             }
             if (tool.name === "compress") {
@@ -238,6 +274,14 @@ export function createLeanAcpExtension(
               return;
             }
             target.registerTool(decorateWithCollapsedDisplay(tool));
+          };
+        }
+        if (property === "registerCommand") {
+          // 拦截上游命令注册：丢弃仅服务于 delegate 的 /acp-subagents，
+          // 其余命令（/acp、/acp-status 等）原样放行。
+          return (name: string, options: Parameters<ExtensionAPI["registerCommand"]>[1]) => {
+            if (REMOVED_COMMANDS.has(name)) return;
+            target.registerCommand(name, options);
           };
         }
         if (property === "on") {

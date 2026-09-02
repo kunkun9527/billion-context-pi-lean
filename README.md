@@ -1,4 +1,4 @@
-# billion-context-pi-lean
+# billion-context-pi-lean-Notsub
 
 [简体中文](README.zh-CN.md)
 
@@ -8,7 +8,7 @@ A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxiangl
 
 * Full compression engine: Keeps upstream context compression, hierarchical summaries, nudges, overflow recovery, retry handling, and tool protection.
 * Streamlined tool surface: Exposes the high-frequency `compress` tool directly, while consolidating `decompress`, `search_context`, and `acp_status` into an on-demand `acp_context` interface.
-* Focused and clean: Disables built-in delegation and auto-updates by design. For delegation workflows, pair with a dedicated subagent extension.
+* Focused and clean: Removes the built-in subagent (delegation) feature — the `acp_delegate*` tools, the `/acp-subagents` command, and delegate usage noise — along with auto-updates, by design. For delegation workflows, pair with a dedicated subagent extension.
 
 Upstream dependency is pinned to `billion-context-pi@0.1.52` for reliable behavior.
 
@@ -19,14 +19,14 @@ In a local comparison against `billion-context-pi@0.1.52` with delegation disabl
 ## Installation
 
 ```bash
-pi install git:github.com/kunkun9527/billion-context-pi-lean
+pi install git:github.com/miko-mepro/billion-context-pi-lean-Notsub
 ```
 
 Or install from a local clone:
 
 ```bash
-git clone https://github.com/kunkun9527/billion-context-pi-lean.git
-cd billion-context-pi-lean
+git clone https://github.com/miko-mepro/billion-context-pi-lean-Notsub.git
+cd billion-context-pi-lean-Notsub
 npm install
 pi install ./
 ```

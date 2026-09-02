@@ -1,4 +1,4 @@
-# billion-context-pi-lean
+# billion-context-pi-lean-Notsub
 
 [English](README.md)
 
@@ -8,7 +8,7 @@
 
 * 完整上下文引擎：保留上游的对话历史压缩、分层摘要、主动提示（Nudge）、溢出恢复、重试机制与工具保护能力。
 * 优化工具布局：高频使用的 `compress` 工具直接对外暴露，其余 `decompress`、`search_context` 与 `acp_status` 操作整合为按需调用的 `acp_context` 入口。
-* 纯粹专注：主动移除了内置的 Delegation 代理分发与自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.52`，确保运行稳定可靠。
+* 纯粹专注：主动移除了内置的 Subagent（子代理）功能 —— 包括 `acp_delegate*` 系列工具、`/acp-subagents` 命令及 delegate 用量噪音行 —— 同时去除了自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.52`，确保运行稳定可靠。
 
 ## 精简优化成效
 
@@ -17,14 +17,14 @@
 ## 安装
 
 ```bash
-pi install git:github.com/kunkun9527/billion-context-pi-lean
+pi install git:github.com/miko-mepro/billion-context-pi-lean-Notsub
 ```
 
 也可以通过本地克隆进行安装：
 
 ```bash
-git clone https://github.com/kunkun9527/billion-context-pi-lean.git
-cd billion-context-pi-lean
+git clone https://github.com/miko-mepro/billion-context-pi-lean-Notsub.git
+cd billion-context-pi-lean-Notsub
 npm install
 pi install ./
 ```
