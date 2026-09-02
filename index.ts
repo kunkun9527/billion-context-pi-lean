@@ -1,4 +1,4 @@
-// billion-context-pi-lean: keep compress direct and route low-frequency ACP tools locally.
+// billion-context-pi-lean-Notsub: keep compress direct and route low-frequency ACP tools locally.
 import type {
   ExtensionAPI,
   ToolDefinition,
