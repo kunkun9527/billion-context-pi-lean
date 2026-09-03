@@ -10,7 +10,7 @@ A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxiangl
 * Streamlined tool surface: Exposes the high-frequency `compress` tool directly, while consolidating `decompress`, `search_context`, and `acp_status` into an on-demand `acp_context` interface.
 * Focused and clean: Disables built-in delegation and auto-updates by design. For delegation workflows, pair with a dedicated subagent extension.
 
-Upstream dependency is pinned to `billion-context-pi@0.1.52` for reliable behavior.
+Upstream dependency is pinned to `billion-context-pi@0.1.56` for reliable behavior.
 
 ## Context Savings
 

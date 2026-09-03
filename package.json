@@ -1,6 +1,6 @@
 {
   "name": "billion-context-pi-lean",
-  "version": "0.1.52-lean.1",
+  "version": "0.1.56-lean.1",
   "private": true,
   "type": "module",
   "description": "Token-lean Pi facade for billion-context-pi with the full upstream context engine.",
@@ -19,7 +19,7 @@
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "billion-context-pi": "0.1.54",
+    "billion-context-pi": "0.1.56",
     "typebox": "1.3.7"
   },
   "devDependencies": {
