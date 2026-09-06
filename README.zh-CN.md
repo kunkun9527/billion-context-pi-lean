@@ -8,11 +8,11 @@
 
 * 完整上下文引擎：保留上游的对话历史压缩、分层摘要、主动提示（Nudge）、溢出恢复、重试机制与工具保护能力。
 * 优化工具布局：高频使用的 `compress` 工具直接对外暴露，其余 `decompress`、`search_context` 与 `acp_status` 操作整合为按需调用的 `acp_context` 入口。
-* 纯粹专注：主动移除了内置的 Delegation 代理分发与自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.56`，确保运行稳定可靠。
+* 纯粹专注：主动移除了内置的 Delegation 代理分发与自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.57`，确保运行稳定可靠。
 
 ## 精简优化成效
 
-在关闭 Delegation 的情况下，与原版 `billion-context-pi@0.1.52` 本地对比：固定的 ACP 系统提示词与工具元数据字符量从约 22,645 字符大幅缩减至 2,859 字符，常驻静态文本减少约 87%。实际 Token 节省情况会因模型分词器及 Prompt 缓存机制而略有差异。
+在双方均关闭 Delegation 的配置下，与上游 `billion-context-pi@0.1.57` 本地对比：Lean 精简版常驻上下文开销为 690 tokens，上游为 5,595 tokens，减少 **4,905 tokens（87.7%）**。
 
 ## 安装
 
@@ -57,16 +57,15 @@ acp_context
 
 单独启用本扩展时，注入到模型初始上下文中的 Token 占用实测如下：
 
-| 项目 | Lean 精简版 | 原版 `billion-context-pi@0.1.52` |
+| 项目 | Lean 精简版 | 原版 `billion-context-pi@0.1.57` |
 | --- | ---: | ---: |
 | `compress` | 231 | 549 |
 | 上下文检索与操作 | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
-| 系统提示词增量 | 369 | 4,417 |
-| **合计** | **690** | **6,061** |
+| 系统提示词增量 | 369 | 3,951 |
+| **合计** | **690** | **5,595** |
 
-相比固定版本的上游扩展，初始开销减少了 **5,371 tokens（88.6%）**。
-测试环境为 Pi 0.84.4 与 `pi-context-view@0.4.3` 独立会话，排除了 Pi 内置工具、Skills、上下文文件与无关扩展。Context View 按 `ceil(字符数 / 4)` 估算。未计入不会发送给模型的纯运行时 UI 与 Slash 命令。
-
+相比当前上游扩展，初始开销减少了 **4,905 tokens（87.7%）**。
+测试时双方均关闭 Delegation，环境为 Pi 0.84.4 与 `pi-context-view@0.4.3` 独立会话，排除了 Pi 内置工具、Skills、上下文文件与无关扩展。Context View 按 `ceil(字符数 / 4)` 估算。未计入不会发送给模型的纯运行时 UI 与 Slash 命令。
 ## 本地开发
 
 ```bash

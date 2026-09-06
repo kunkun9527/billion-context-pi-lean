@@ -10,11 +10,11 @@ A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxiangl
 * Streamlined tool surface: Exposes the high-frequency `compress` tool directly, while consolidating `decompress`, `search_context`, and `acp_status` into an on-demand `acp_context` interface.
 * Focused and clean: Disables built-in delegation and auto-updates by design. For delegation workflows, pair with a dedicated subagent extension.
 
-Upstream dependency is pinned to `billion-context-pi@0.1.56` for reliable behavior.
+Upstream dependency is pinned to `billion-context-pi@0.1.57`; delegation remains disabled in this lean wrapper.
 
 ## Context Savings
 
-In a local comparison against `billion-context-pi@0.1.52` with delegation disabled, persistent ACP prompt and tool metadata dropped from roughly 22,645 characters to 2,859 characters, achieving an approximate 87% reduction in static text overhead. Actual token savings may vary based on model tokenizer and prompt caching behavior.
+The benchmark below compares the same delegation-disabled configuration against upstream `0.1.57`.
 
 ## Installation
 
@@ -59,16 +59,15 @@ Use `help` only when you need to inspect the full upstream schema.
 
 With only this extension enabled, its recurring initialization overhead in the model context is:
 
-| Item | Lean | Upstream `billion-context-pi@0.1.52` |
+| Item | Lean | Upstream `billion-context-pi@0.1.57` |
 | --- | ---: | ---: |
 | `compress` | 231 | 549 |
 | Context operations | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
-| System prompt additions | 369 | 4,417 |
-| **Total** | **690** | **6,061** |
+| System prompt additions | 369 | 3,951 |
+| **Total** | **690** | **5,595** |
 
-This saves **5,371 tokens (88.6%)** compared to the pinned upstream package.
-The benchmark was measured on Pi 0.84.4 with `pi-context-view@0.4.3` in a fresh isolated session, excluding built-in tools, skills, context files, and unrelated extensions. Context View estimates tokens as `ceil(characters / 4)`. Pure runtime UI elements and slash commands are excluded as they are not sent to the model.
-
+This saves **4,905 tokens (87.7%)** compared to the pinned upstream package.
+The benchmark was measured on Pi 0.84.4 with `pi-context-view@0.4.3` in a fresh isolated session, with delegation disabled for both packages, excluding built-in tools, skills, context files, and unrelated extensions. Context View estimates tokens as `ceil(characters / 4)`. Pure runtime UI elements and slash commands are excluded as they are not sent to the model.
 ## Development
 
 ```bash
