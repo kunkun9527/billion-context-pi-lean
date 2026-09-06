@@ -171,7 +171,9 @@ test("keeps compress direct, retains concise critical descriptions, and rewrites
   const schema = tool.parameters;
   const entries = schema.properties.content.items.properties;
   assert.equal(schema.description, undefined);
-  assert.equal(schema.properties.content.description, undefined);
+  assert.match(schema.properties.content.description, /direct array/i);
+  assert.match(schema.properties.content.description, /JSON strings|JSON-stringify/i);
+  assert.match(schema.properties.content.description, /mix/i);
   assert.match(schema.properties.topic.description, /label/i);
   assert.match(schema.properties.summaryMaxChars.description, /length/i);
   assert.match(entries.startId.description, /first/i);

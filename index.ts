@@ -59,6 +59,7 @@ const FACADE_PARAMETERS = Type.Object({
 });
 
 const COMPRESS_FIELD_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  content: "Direct array; no JSON strings/nesting/mix.",
   startId: "Inclusive first mNNNNN or bN ref.",
   endId: "Inclusive last mNNNNN or bN ref.",
   summary: "Self-contained replacement preserving exact technical details.",

@@ -61,13 +61,12 @@ With only this extension enabled, its recurring initialization overhead in the m
 
 | Item | Lean | Upstream `billion-context-pi@0.1.52` |
 | --- | ---: | ---: |
-| `compress` | 216 | 549 |
+| `compress` | 231 | 549 |
 | Context operations | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
 | System prompt additions | 369 | 4,417 |
-| **Total** | **675** | **6,061** |
+| **Total** | **690** | **6,061** |
 
-This saves **5,386 tokens (88.9%)** compared to the pinned upstream package.
-
+This saves **5,371 tokens (88.6%)** compared to the pinned upstream package.
 The benchmark was measured on Pi 0.84.4 with `pi-context-view@0.4.3` in a fresh isolated session, excluding built-in tools, skills, context files, and unrelated extensions. Context View estimates tokens as `ceil(characters / 4)`. Pure runtime UI elements and slash commands are excluded as they are not sent to the model.
 
 ## Development

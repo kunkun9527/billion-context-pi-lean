@@ -1,7 +1,6 @@
 {
   "name": "billion-context-pi-lean",
-  "version": "0.1.56-lean.1",
-  "private": true,
+  "version": "0.1.56-lean.2",
   "type": "module",
   "description": "Token-lean Pi facade for billion-context-pi with the full upstream context engine.",
   "license": "MIT",
