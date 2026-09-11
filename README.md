@@ -10,11 +10,11 @@ A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxiangl
 * Streamlined tool surface: Exposes the high-frequency `compress` tool directly, while consolidating `decompress`, `search_context`, and `acp_status` into an on-demand `acp_context` interface.
 * Focused and clean: Disables built-in delegation and auto-updates by design. For delegation workflows, pair with a dedicated subagent extension.
 
-Upstream dependency is pinned to `billion-context-pi@0.1.57`; delegation remains disabled in this lean wrapper.
+Upstream dependency is pinned to `billion-context-pi@0.1.67`; delegation remains disabled in this lean wrapper.
 
 ## Context Savings
 
-The benchmark below compares the same delegation-disabled configuration against upstream `0.1.57`.
+The benchmark below compares the same delegation-disabled configuration against upstream `0.1.67`.
 
 ## Installation
 
@@ -59,7 +59,7 @@ Use `help` only when you need to inspect the full upstream schema.
 
 With only this extension enabled, its recurring initialization overhead in the model context is:
 
-| Item | Lean | Upstream `billion-context-pi@0.1.57` |
+| Item | Lean | Upstream `billion-context-pi@0.1.67` |
 | --- | ---: | ---: |
 | `compress` | 231 | 549 |
 | Context operations | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
