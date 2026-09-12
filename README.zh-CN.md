@@ -8,11 +8,11 @@
 
 * 完整上下文引擎：保留上游的对话历史压缩、分层摘要、主动提示（Nudge）、溢出恢复、重试机制与工具保护能力。
 * 优化工具布局：高频使用的 `compress` 工具直接对外暴露，其余 `decompress`、`search_context` 与 `acp_status` 操作整合为按需调用的 `acp_context` 入口。
-* 纯粹专注：主动移除了内置的 Delegation 代理分发与自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.67`，确保运行稳定可靠。
+* 纯粹专注：主动移除了内置的 Delegation 代理分发与自动更新逻辑；如需多 Agent 协作，建议搭配独立的 Subagent 扩展使用。上游依赖版本锁定为 `billion-context-pi@0.1.68`，确保运行稳定可靠。
 
 ## 精简优化成效
 
-在双方均关闭 Delegation 的配置下，与上游 `billion-context-pi@0.1.67` 本地对比：Lean 精简版常驻上下文开销为 690 tokens，上游为 5,595 tokens，减少 **4,905 tokens（87.7%）**。
+在双方均关闭 Delegation 的配置下，与上游 `billion-context-pi@0.1.68` 本地对比：Lean 精简版常驻上下文开销为 690 tokens，上游为 5,595 tokens，减少 **4,905 tokens（87.7%）**。
 
 ## 安装
 
@@ -57,7 +57,7 @@ acp_context
 
 单独启用本扩展时，注入到模型初始上下文中的 Token 占用实测如下：
 
-| 项目 | Lean 精简版 | 原版 `billion-context-pi@0.1.67` |
+| 项目 | Lean 精简版 | 原版 `billion-context-pi@0.1.68` |
 | --- | ---: | ---: |
 | `compress` | 231 | 549 |
 | 上下文检索与操作 | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
