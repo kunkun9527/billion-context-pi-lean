@@ -14,7 +14,9 @@ Upstream dependency is pinned to `billion-context-pi@0.1.69`; delegation remains
 
 ## Context Savings
 
-The benchmark below compares the same delegation-disabled configuration against upstream `0.1.69`.
+<!-- token-benchmark:summary:start -->
+> **Token benchmark: Lean 690, upstream `billion-context-pi@0.1.69` 5,802 — 88.1% fewer.**
+<!-- token-benchmark:summary:end -->
 
 ## Installation
 
@@ -57,17 +59,17 @@ Use `help` only when you need to inspect the full upstream schema.
 
 ## Context Footprint Benchmark
 
-With only this extension enabled, its recurring initialization overhead in the model context is:
+<!-- token-benchmark:benchmark:start -->
+With only this extension enabled, its recurring model-facing initialization contribution is:
 
-| Item | Lean | Upstream `billion-context-pi@0.1.69` |
-| --- | ---: | ---: |
-| `compress` | 231 | 549 |
-| Context operations | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
-| System prompt additions | 369 | 4,158 |
-| **Total** | **690** | **5,802** |
+| Variant | Tool and prompt contribution | Total |
+| --- | --- | ---: |
+| Lean `billion-context-pi-lean@0.1.69-lean.1` | `compress` (231) + `acp_context` (90) + prompt additions (369) | **690** |
+| Upstream `billion-context-pi@0.1.69` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + prompt additions (4,158) | **5,802** |
 
-This saves **5,112 tokens (88.1%)** compared to the pinned upstream package.
-The benchmark was measured on Pi 0.85.1 with `measure-plugin-tokens-v3.mjs` in a fresh isolated session, with delegation disabled for both packages, excluding built-in tools, skills, context files, and unrelated extensions. Token estimates use `ceil(characters / 4)`. Pure runtime UI elements and slash commands are excluded as they are not sent to the model.
+This saves **5,112 tokens (88.1%)**.
+Measured with Pi 0.85.1 in separate temporary processes with empty configuration. Built-in tools, skills, context files, messages, unrelated extensions, runtime UI, and slash commands are excluded. Tokens use `ceil(characters / 4)`.
+<!-- token-benchmark:benchmark:end -->
 
 ## Development
 

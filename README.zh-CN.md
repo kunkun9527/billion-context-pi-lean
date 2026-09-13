@@ -12,7 +12,9 @@
 
 ## 精简优化成效
 
-在双方均关闭 Delegation 的配置下，与上游 `billion-context-pi@0.1.69` 本地对比：Lean 精简版常驻上下文开销为 690 tokens，上游为 5,802 tokens，减少 **5,112 tokens（88.1%）**。
+<!-- token-benchmark:summary:start -->
+> **Token 基准：Lean 690，上游 `billion-context-pi@0.1.69` 5,802，减少 88.1%。**
+<!-- token-benchmark:summary:end -->
 
 ## 安装
 
@@ -55,17 +57,17 @@ acp_context
 
 ## 初始化上下文占用对比
 
-单独启用本扩展时，注入到模型初始上下文中的 Token 占用实测如下：
+<!-- token-benchmark:benchmark:start -->
+单独启用本扩展时，模型可见的常驻初始化上下文如下：
 
-| 项目 | Lean 精简版 | 原版 `billion-context-pi@0.1.69` |
-| --- | ---: | ---: |
-| `compress` | 231 | 549 |
-| 上下文检索与操作 | `acp_context`: 90 | `decompress` + `search_context` + `acp_status`: 1,095 |
-| 系统提示词增量 | 369 | 4,158 |
-| **合计** | **690** | **5,802** |
+| 版本 | 工具与 Prompt 构成 | 合计 |
+| --- | --- | ---: |
+| Lean `billion-context-pi-lean@0.1.69-lean.1` | `compress` (231) + `acp_context` (90) + Prompt 注入 (369) | **690** |
+| 上游 `billion-context-pi@0.1.69` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + Prompt 注入 (4,158) | **5,802** |
 
-相比当前上游扩展，初始开销减少了 **5,112 tokens（88.1%）**。
-测试时双方均关闭 Delegation，环境为 Pi 0.85.1 与 `measure-plugin-tokens-v3.mjs` 独立会话，排除了 Pi 内置工具、Skills、上下文文件与无关扩展。Token 按 `ceil(字符数 / 4)` 估算。未计入不会发送给模型的纯运行时 UI 与 Slash 命令。
+节省 **5,112 tokens（88.1%）**。
+测量环境为 Pi 0.85.1 的独立临时进程与空白配置。排除内置工具、Skills、上下文文件、消息、无关扩展、运行时 UI 与 Slash Commands；Token 按 `ceil(字符数 / 4)` 估算。
+<!-- token-benchmark:benchmark:end -->
 
 ## 本地开发
 
