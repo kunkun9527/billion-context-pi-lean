@@ -66,7 +66,7 @@ acp_context
 | 上游 `billion-context-pi@0.1.69` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + Prompt 注入 (4,158) | **5,802** |
 
 节省 **5,112 tokens（88.1%）**。
-测量环境为 Pi 0.85.1 的独立临时进程与空白配置。排除内置工具、Skills、上下文文件、消息、无关扩展、运行时 UI 与 Slash Commands；Token 按 `ceil(字符数 / 4)` 估算。
+测量环境为 Pi 0.85.1 的独立临时进程、空白工作目录与空白配置。排除内置工具、Skills、上下文文件、会话历史、用户消息、无关扩展、运行时 UI 与 Slash Commands；计入扩展的 `before_agent_start` 注入。Token 是按 `ceil(字符数 / 4)` 计算的固定字符代理估算，并非模型 tokenizer 实际计费值。
 <!-- token-benchmark:benchmark:end -->
 
 ## 本地开发
