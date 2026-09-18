@@ -65,36 +65,6 @@ acp_context
 
 Use `help` only when you need to inspect the full upstream schema.
 
-## Tune the prompts yourself
-
-Upstream absorbed ≈90% of this wrapper's trimmed prompts as the built-in
-`lean` pack, so start there — one line in `~/.pi/acp.json`
-(or `<project>/.pi/acp.json`):
-
-```json
-{ "compress": { "promptPack": "lean" } }
-```
-
-To go further, follow upstream's
-[prompt tuning guide](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.md):
-level 1 is the pack above, level 2 overrides single sections
-(`promptSections` / `nudgeSections` / `toolPrompts`), level 3 replaces the
-core compression rules (`prompts.*` plus `acknowledgePromptsRisk: true`) —
-or just ask your agent to compress them for you.
-
-Example: why the lean pack is still long — the author deliberately kept the
-detailed `howToCompress` rules, which weaker models need to avoid
-compression hallucinations. If you run frontier models and want to compress
-further, override just that section (≈150 tokens vs ≈500 in the pack):
-
-```json
-{
-  "promptSections": {
-    "howToCompress": "HOW TO COMPRESS\nWrite a self-contained replacement. Keep the user's goal and changes, hard constraints, decisions with rationale, exact technical facts, current state, next steps, unresolved questions/TODOs, and useful message refs. Drop consumed or repeated process and verbose outputs; keep failed attempts only as one-line lessons. Use dense bullets under short thematic headers. Never invent, weaken, or generalize exact values."
-  }
-}
-```
-
 ## Context Footprint Benchmark
 
 <!-- token-benchmark:benchmark:start -->

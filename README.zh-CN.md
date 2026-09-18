@@ -62,28 +62,6 @@ acp_context
 
 仅在确需查看完整上游 Schema 时调用 `help`。
 
-## 自己微调提示词
-
-上游已吸收本包装约 90% 的精简提示词，做成内置 `lean` 包，先用它——`~/.pi/acp.json`（或 `<项目>/.pi/acp.json`）里加一行：
-
-```json
-{ "compress": { "promptPack": "lean" } }
-```
-
-想再压，按上游[微调压缩提示词教程](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.zh-CN.md)来：第一层就是上面的包，第二层覆盖单个段（`promptSections` / `nudgeSections` / `toolPrompts`），第三层替换核心压缩规则（`prompts.*` 加 `acknowledgePromptsRisk: true`）——也可以直接让 agent 帮你压缩。
-
-示例：为什么 lean 包还是这么长——作者故意保留了详细的 `howToCompress`
-规则，弱模型靠它才不会压缩出幻觉。如果你用的是前沿模型，还想再压，
-只覆盖这一段就行（约 150 token，包里约 500）：
-
-```json
-{
-  "promptSections": {
-    "howToCompress": "HOW TO COMPRESS\nWrite a self-contained replacement. Keep the user's goal and changes, hard constraints, decisions with rationale, exact technical facts, current state, next steps, unresolved questions/TODOs, and useful message refs. Drop consumed or repeated process and verbose outputs; keep failed attempts only as one-line lessons. Use dense bullets under short thematic headers. Never invent, weaken, or generalize exact values."
-  }
-}
-```
-
 ## 初始化上下文占用对比
 
 <!-- token-benchmark:benchmark:start -->
