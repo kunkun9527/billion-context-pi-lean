@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-> **已弃用，不再更新。**上游已采纳本包装的精简提示词（保留约 90%），做成
+> **不再更新。**上游已采纳本包装的精简提示词（保留约 90%），做成
 > 内置 `lean` 提示词包
 > （见 [issue #4](https://github.com/kunkun9527/billion-context-pi-lean/issues/4)）。
 > 直接用最新上游，在 `acp.json` 里写 `{ "compress": { "promptPack": "lean" } }`

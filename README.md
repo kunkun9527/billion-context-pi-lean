@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-> **Deprecated — no longer updated.** Upstream adopted this wrapper's trimmed
+> **No longer updated.** Upstream adopted this wrapper's trimmed
 > prompts (≈90% kept) as the built-in `lean` prompt pack
 > ([issue #4](https://github.com/kunkun9527/billion-context-pi-lean/issues/4)).
 > Just use the latest upstream with `{ "compress": { "promptPack": "lean" } }`
