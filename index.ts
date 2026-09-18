@@ -6,6 +6,30 @@ import type {
 import { createAcpExtension } from "billion-context-pi";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
+// 压缩模型顺位池：配置、/acp-models 界面、只读历史快照与摘要降级编排。
+import {
+  DEFAULT_SUMMARY_MAX_CHARS,
+  PoolEditor,
+  buildPoolRows,
+  compressModelsConfigPath,
+  createHistorySnapshot,
+  createPoolEditorComponent,
+  emptyCompressModelsConfig,
+  extractRangeText,
+  formatCompressModelLabel,
+  generateRangeSummary,
+  loadCompressModelsConfig,
+  readAcpStateSnapshot,
+  rememberCompressModelsDraft,
+  resolvePoolCandidates,
+  saveCompressModelsConfig,
+  takeCompressModelsDraft,
+  type HistorySnapshot,
+  type ModelRegistryLike,
+  type PiModelLike,
+  type SummaryAttempt,
+  type SummaryCandidate,
+} from "./compressModels.ts";
 
 const COLLAPSED_DISPLAY_SERVICE = Symbol.for(
   "@local/pi-collapsed-tools.display-service.v1",
@@ -30,6 +54,7 @@ function decorateWithCollapsedDisplay<T extends CollapsedDisplayTool>(tool: T): 
 const LEAN_SYSTEM_PROMPT = `ACP context management
 - User/tool messages carry hidden <acp> refs such as m00123. Never echo the XML tags; use only refs in ACP tool calls.
 - Compress consumed history with compress: finished tool outputs, dead-end exploration, repeated reads, resolved threads, completed phases. Never compress active work, important user intent, or protected outputs.
+- compress only needs the target ranges (startId/endId + optional topic); the configured compress model pool writes the summary from the real history. An optional summary field is a draft hint, never the final text.
 - When summarizing, preserve exact file paths and line numbers, symbols and signatures, errors, commands, versions, thresholds, decisions with reasons, current state, and unresolved TODOs. Never replace exact technical values with vague wording.
 - Recall or inspect context with acp_context using op decompress, search_context, or acp_status and the operation's original args object. Use help only when fields are unclear.
 - Refs may be renumbered after compression. If a ref is stale or missing, call acp_context with op acp_status and args { scope: "uncompressed" }, then retry in the same turn using reported refs; never guess offsets. Batch target ranges when possible.
@@ -95,7 +120,7 @@ const FACADE_PARAMETERS = Type.Object({
 const COMPRESS_FIELD_DESCRIPTIONS: Readonly<Record<string, string>> = {
   startId: "Inclusive first mNNNNN or bN ref.",
   endId: "Inclusive last mNNNNN or bN ref.",
-  summary: "Self-contained replacement preserving exact technical details.",
+  summary: "Optional draft hint; the compress model pool writes the final summary.",
   topic: "Short label; a per-range label overrides the top-level fallback.",
   summaryMaxChars: "Optional summary length limit override.",
 };
@@ -121,6 +146,24 @@ function compactCompressSchemaDescriptions(
     }
     compactCompressSchemaDescriptions(child, undefined, seen);
   }
+}
+
+/**
+ * 把 compress 暴露 schema 中的 summary 从必填改为可选：
+ * 主模型只负责选择已消费的范围，摘要由压缩模型池根据真实历史生成。
+ * 只影响模型看到的 schema，上游 execute 仍会收到我们补全后的 summary。
+ */
+function relaxCompressSummaryRequirement(value: unknown, seen = new Set<object>()): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.required) && record.required.includes("summary")) {
+    const properties = record.properties;
+    if (properties && typeof properties === "object" && "summary" in (properties as Record<string, unknown>)) {
+      record.required = record.required.filter((name) => name !== "summary");
+    }
+  }
+  for (const child of Object.values(record)) relaxCompressSummaryRequirement(child, seen);
 }
 
 function appendSystemPrompt(base: unknown): string {
@@ -207,20 +250,354 @@ function helpResult(args: FacadeArgs, tools: Map<string, CapturedTool>) {
   };
 }
 
-function wrapCompress(tool: CapturedTool): CapturedTool {
+// ─── 压缩模型池接入（/acp-models + compress 包装层）─────────────────────
+
+type PoolSnapshotEntry = { snapshot: HistorySnapshot; model?: PiModelLike };
+
+/** 每个扩展实例一份的会话快照表：只读保存 ACP 实际渲染进上下文的消息。 */
+type PoolRuntime = {
+  snapshotFor(sessionId: string): PoolSnapshotEntry | undefined;
+  setSnapshot(sessionId: string, entry: PoolSnapshotEntry): void;
+};
+
+function createPoolRuntime(): PoolRuntime {
+  const snapshots = new Map<string, PoolSnapshotEntry>();
+  return {
+    snapshotFor: (sessionId) => snapshots.get(sessionId),
+    setSnapshot: (sessionId, entry) => {
+      snapshots.set(sessionId, entry);
+    },
+  };
+}
+
+/** 捕获 context 变换的输出：这就是模型本轮真正看到的 ACP 上下文。 */
+function captureHistorySnapshot(pool: PoolRuntime, ctx: any, messages: unknown): void {
+  if (!Array.isArray(messages)) return;
+  const sessionId = ctx?.sessionManager?.getSessionId?.();
+  if (typeof sessionId !== "string" || sessionId.length === 0) return;
+  pool.setSnapshot(sessionId, { snapshot: createHistorySnapshot(messages), model: ctx?.model ?? undefined });
+}
+
+/** 模型可见的简短回执（不包含内部对话、原文副本或降级日志）。 */
+function textResult(text: string, details?: Record<string, unknown>) {
+  return { content: [{ type: "text" as const, text }], details };
+}
+
+type CompressRangePlan = { startId: string; endId: string; topic?: string; hint?: string };
+
+/** 解析 compress 参数：只要求 startId/endId；summary 降级为草稿提示（兼容旧调用）。 */
+function parseCompressRanges(params: any):
+  | { ok: true; ranges: CompressRangePlan[]; topic?: string; summaryMaxChars?: number }
+  | { ok: false; reason: string } {
+  const raw = params?.content;
+  let items: unknown[] = [];
+  if (typeof raw === "string") {
+    // 非严格工具提供者可能把数组序列化成字符串（与上游保持同样的兼容）。
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) items = parsed;
+      else return { ok: false, reason: "content 字符串不是 JSON 数组" };
+    } catch {
+      return { ok: false, reason: "content 字符串不是合法 JSON" };
+    }
+  } else if (Array.isArray(raw)) {
+    items = raw;
+  } else {
+    return { ok: false, reason: "缺少 content 范围数组" };
+  }
+
+  const ranges: CompressRangePlan[] = [];
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item !== "object") return { ok: false, reason: `content[${index}] 不是对象` };
+    const entry = item as Record<string, unknown>;
+    const startId = typeof entry.startId === "string" ? entry.startId.trim() : "";
+    const endId = typeof entry.endId === "string" ? entry.endId.trim() : "";
+    if (!startId || !endId) return { ok: false, reason: `content[${index}] 缺少 startId/endId` };
+    ranges.push({
+      startId,
+      endId,
+      topic: typeof entry.topic === "string" && entry.topic.trim() ? entry.topic.trim() : undefined,
+      hint: typeof entry.summary === "string" && entry.summary.trim() ? entry.summary.trim() : undefined,
+    });
+  }
+  if (ranges.length === 0) return { ok: false, reason: "content 为空" };
+  return {
+    ok: true,
+    ranges,
+    topic: typeof params?.topic === "string" && params.topic.trim() ? params.topic.trim() : undefined,
+    summaryMaxChars: typeof params?.summaryMaxChars === "number" ? params.summaryMaxChars : undefined,
+  };
+}
+
+/** 工具界面上的「模型池」标签：只用 details 渲染，不进入模型上下文。 */
+function compressModelsTag(details: unknown): string | undefined {
+  const info = (details as { compressModels?: unknown } | undefined)?.compressModels;
+  if (!info || typeof info !== "object") return undefined;
+  const record = info as Record<string, unknown>;
+  const used = Array.isArray(record.used) ? record.used.filter((v): v is string => typeof v === "string") : [];
+  const attempts = Array.isArray(record.attempts) ? record.attempts : [];
+  const failed = attempts.filter(
+    (item) => item && typeof item === "object" && (item as SummaryAttempt).ok === false,
+  );
+  const label = used.length > 0 ? [...new Set(used)].join(", ") : "未使用（无候选）";
+  return failed.length > 0 ? `模型池：${label} · 降级 ${failed.length} 次` : `模型池：${label}`;
+}
+
+/** 上游没有 renderResult 时的兑底渲染：只显示结果首行。 */
+function defaultCompressLines(result: { content?: unknown } | undefined, width: number): string[] {
+  const parts = Array.isArray(result?.content) ? result.content : [];
+  const first = parts.find(
+    (part): part is { type: "text"; text: string } =>
+      Boolean(part) &&
+      typeof part === "object" &&
+      (part as { type?: unknown }).type === "text" &&
+      typeof (part as { text?: unknown }).text === "string",
+  );
+  const text = (first?.text ?? "compress").split("\n")[0];
+  return [text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text];
+}
+
+/** 包装 compress 渲染：保留上游渲染（如有），追加一行模型池标签。 */
+function wrapCompressRender(tool: CapturedTool): CapturedTool["renderResult"] {
+  const upstream = tool.renderResult;
+  return (result, options, theme, context) => {
+    const base = upstream?.(result, options, theme, context);
+    const tag = compressModelsTag(result?.details);
+    return {
+      render: (width: number) => {
+        const lines = base ? base.render(width) : defaultCompressLines(result, width);
+        return tag ? [...lines, `  ${tag}`] : lines;
+      },
+      invalidate: () => base?.invalidate?.(),
+    };
+  };
+}
+
+/** compress 主流程：主模型选范围 → 快照取原文 → 顺位池生成摘要 → 调用原引擎。 */
+async function runCompressWithModelPool(
+  tool: CapturedTool,
+  pool: PoolRuntime,
+  callId: string,
+  params: any,
+  signal: AbortSignal | undefined,
+  onUpdate: ((update: unknown) => void) | undefined,
+  ctx: any,
+): Promise<{ content: unknown; details?: unknown }> {
+  const parsed = parseCompressRanges(params);
+  if (!parsed.ok) return textResult(`compress 未执行：${parsed.reason}。(历史未修改)`);
+
+  const sessionId = ctx?.sessionManager?.getSessionId?.();
+  const entry = typeof sessionId === "string" ? pool.snapshotFor(sessionId) : undefined;
+  if (!entry) {
+    return textResult("compress 未执行：本轮还没有 ACP 上下文快照，请在同一轮稍后重试。(历史未修改)");
+  }
+  const snapshot = entry.snapshot;
+
+  const registry = ctx?.modelRegistry as ModelRegistryLike | undefined;
+  if (!registry || typeof registry.complete !== "function") {
+    return textResult("compress 未执行：模型注册表不可用。(历史未修改)");
+  }
+
+  // 每次调用开始固定配置、目标历史与主模型快照，避免中途变更导致调用链漂移。
+  const loaded = await loadCompressModelsConfig();
+  const config = loaded.status === "corrupt" ? emptyCompressModelsConfig() : loaded.config;
+  const candidates: SummaryCandidate[] = resolvePoolCandidates(config, registry).map((candidate) => ({
+    ref: candidate.ref,
+    label: candidate.label,
+    model: candidate.model,
+  }));
+
+  const mainModel = (entry.model ?? ctx?.model) as PiModelLike | undefined;
+  const fallback: SummaryCandidate | undefined =
+    mainModel && typeof mainModel.id === "string" && typeof mainModel.provider === "string"
+      ? {
+          ref: { provider: mainModel.provider, modelId: mainModel.id },
+          label: formatCompressModelLabel(mainModel.provider, mainModel.id),
+          model: mainModel,
+        }
+      : undefined;
+
+  const maxChars =
+    parsed.summaryMaxChars && parsed.summaryMaxChars > 0 ? parsed.summaryMaxChars : DEFAULT_SUMMARY_MAX_CHARS;
+
+  // 只读读取 <session>.acp.json：bN 的当前摘要层级 + ref/rawId 权威映射。
+  const sessionFile = ctx?.sessionManager?.getSessionFile?.();
+  const state =
+    typeof sessionFile === "string" && sessionFile.length > 0
+      ? await readAcpStateSnapshot(`${sessionFile}.acp.json`)
+      : { blocks: new Map(), refToRawId: new Map(), rawIdToRef: new Map() };
+
+  const summaries: string[] = [];
+  const used: string[] = [];
+  const attempts: SummaryAttempt[] = [];
+  const poolNote =
+    candidates.length === 0
+      ? "（模型池为空，使用主模型）"
+      : `（顺位：${candidates.map((candidate) => candidate.label).join(" → ")}）`;
+
+  // 批量范围串行生成：任一范围失败都不提交，避免部分压缩。
+  for (const range of parsed.ranges) {
+    if (signal?.aborted) return textResult("compress 已取消。(历史未修改)");
+    const extracted = extractRangeText(snapshot, range.startId, range.endId, {
+      blocks: state.blocks,
+      rawIdToRef: state.rawIdToRef,
+    });
+    if (!extracted.ok) return textResult(`compress 未执行：${extracted.reason}。(历史未修改)`);
+
+    const outcome = await generateRangeSummary({
+      range: {
+        startId: range.startId,
+        endId: range.endId,
+        topic: range.topic ?? parsed.topic,
+        hint: range.hint,
+      },
+      body: extracted.text,
+      maxChars,
+      candidates,
+      fallback,
+      complete: (model, context, options) => registry.complete(model, context, options),
+      signal,
+    });
+    attempts.push(...outcome.attempts);
+    if (!outcome.ok) {
+      const reason = outcome.cancelled ? "已取消" : `摘要生成失败：${outcome.reason}`;
+      return textResult(`compress ${reason}${poolNote}。(历史未修改)`, { compressModels: { attempts } });
+    }
+    summaries.push(outcome.summary);
+    used.push(outcome.used);
+  }
+
+  // 提交前再次确认快照未被替换（分支切换或并发压缩会替换快照对象）。
+  if (typeof sessionId === "string" && pool.snapshotFor(sessionId) !== entry) {
+    return textResult("compress 已放弃：会话历史在摘要生成期间发生变化，请重试。(历史未修改)");
+  }
+
+  const filled = {
+    ...(params as Record<string, unknown>),
+    content: parsed.ranges.map((range, index) => ({
+      startId: range.startId,
+      endId: range.endId,
+      ...(range.topic ?? parsed.topic ? { topic: range.topic ?? parsed.topic } : {}),
+      summary: summaries[index],
+    })),
+  };
+  const result = (await tool.execute(callId, filled as any, signal as any, onUpdate as any, ctx)) as {
+    content: unknown;
+    details?: unknown;
+  };
+  const existingDetails =
+    result?.details && typeof result.details === "object" ? (result.details as Record<string, unknown>) : {};
+  return {
+    ...result,
+    details: {
+      ...existingDetails,
+      compressModels: {
+        used,
+        attempts,
+        pool: candidates.map((candidate) => candidate.label),
+        fallback: fallback?.label,
+      },
+    },
+  };
+}
+
+function wrapCompress(tool: CapturedTool, pool: PoolRuntime): CapturedTool {
   return {
     ...tool,
-    description: "Replace consumed conversation ranges with self-contained summaries using mNNNNN or bN refs.",
+    description: "Compress consumed conversation ranges by refs; the configured compress model pool writes each summary.",
     promptSnippet: "",
     promptGuidelines: [],
+    renderResult: wrapCompressRender(tool),
     async execute(callId, params, signal, onUpdate, ctx) {
       const forwardUpdate = onUpdate
         ? (update: unknown) => onUpdate(rewriteModelFacingText(update) as any)
         : undefined;
-      const result = await tool.execute(callId, params, signal, forwardUpdate, ctx);
+      const result = await runCompressWithModelPool(tool, pool, callId, params, signal, forwardUpdate, ctx);
       return rewriteModelFacingText(result) as any;
     },
   };
+}
+
+// ─── /acp-models 命令 ──────────────────────────────────────────────────
+
+/** 打开模型池配置界面：Ctrl+S 保存，Esc 放弃；损坏配置不覆盖、保存失败保留草稿。 */
+async function runAcpModelsCommand(ctx: any): Promise<void> {
+  const ui = ctx?.ui;
+  const registry = ctx?.modelRegistry as ModelRegistryLike | undefined;
+  if (!ui || typeof ui.custom !== "function" || !registry || typeof registry.getAll !== "function") {
+    ui?.notify?.("压缩模型池配置需要交互模式：请在交互式 Pi 中运行 /acp-models。", "warning");
+    return;
+  }
+
+  const configFile = compressModelsConfigPath();
+  const loaded = await loadCompressModelsConfig(configFile);
+  if (loaded.status === "corrupt") {
+    // 明确提示且不打开编辑器，避免把损坏文件覆盖成空配置。
+    ui.notify(`[模型池] 配置损坏：${loaded.error}。请修复或删除 ${configFile} 后重试。`, "error");
+    return;
+  }
+
+  const draft = takeCompressModelsDraft();
+  if (loaded.status === "missing") {
+    ui.notify(`[模型池] 未找到 ${configFile}：默认使用当前主模型，保存后会创建该文件。`, "info");
+  } else if (draft) {
+    ui.notify("[模型池] 已恢复上次未保存的草稿。", "info");
+  }
+
+  let models: PiModelLike[] = [];
+  try {
+    models = registry.getAll() as PiModelLike[];
+  } catch {
+    models = [];
+  }
+  const rows = buildPoolRows(models, draft ?? loaded.config, (model) => {
+    try {
+      return Boolean(registry.hasConfiguredAuth(model));
+    } catch {
+      return false;
+    }
+  });
+  const editor = new PoolEditor(rows);
+
+  const choice = await ui.custom(
+    (
+      tui: { requestRender?: () => void },
+      theme: unknown,
+      _keybindings: unknown,
+      done: (result: "save" | "cancel") => void,
+    ) =>
+      createPoolEditorComponent({
+        editor,
+        theme: theme as { fg?: (color: string, text: string) => string },
+        requestRender: () => tui?.requestRender?.(),
+        onDone: done,
+      }),
+  );
+
+  if (choice !== "save") {
+    ui.notify("[模型池] 已放弃本次修改。", "info");
+    return;
+  }
+  const saved = await saveCompressModelsConfig(configFile, editor.toConfig());
+  if (!saved.ok) {
+    rememberCompressModelsDraft(editor.toConfig());
+    ui.notify(`[模型池] 保存失败：${saved.error}；草稿已保留，下次 /acp-models 会恢复。`, "error");
+    return;
+  }
+  const count = editor.toConfig().models.length;
+  ui.notify(
+    count === 0 ? "[模型池] 已清空顺位：摘要将由当前主模型生成。" : `[模型池] 已保存 ${count} 个模型的顺位。`,
+    "info",
+  );
+}
+
+function registerAcpModelsCommand(pi: ExtensionAPI): void {
+  pi.registerCommand("acp-models", {
+    description: "Configure the compress model pool (ranked summary models)",
+    handler: async (_args: string, ctx: any) => {
+      await runAcpModelsCommand(ctx);
+    },
+  });
 }
 
 function facadeTool(tools: Map<string, CapturedTool>): ToolDefinition<typeof FACADE_PARAMETERS, unknown, unknown> {
@@ -256,6 +633,7 @@ export function createLeanAcpExtension(
 ): (pi: ExtensionAPI) => void {
   return (pi: ExtensionAPI): void => {
     const tools = new Map<string, CapturedTool>();
+    const pool = createPoolRuntime();
     let promptHookRegistered = false;
     const leanPi = new Proxy(pi, {
       get(target, property, receiver) {
@@ -270,7 +648,9 @@ export function createLeanAcpExtension(
             }
             if (tool.name === "compress") {
               compactCompressSchemaDescriptions(tool.parameters);
-              target.registerTool(decorateWithCollapsedDisplay(wrapCompress(tool)));
+              // 主模型只负责选范围：把 summary 从必填改成可选，摘要交给模型池生成。
+              relaxCompressSummaryRequirement(tool.parameters);
+              target.registerTool(decorateWithCollapsedDisplay(wrapCompress(tool, pool)));
               return;
             }
             target.registerTool(decorateWithCollapsedDisplay(tool));
@@ -286,6 +666,17 @@ export function createLeanAcpExtension(
         }
         if (property === "on") {
           return (eventName: string, handler: (...args: unknown[]) => unknown) => {
+            if (eventName === "context") {
+              // 只读快照适配器：包一层上游 context 转换，捕获 ACP 真正渲染出的上下文
+              // （含 <acp>mNNNNN</acp> 标签），供 compress 包装层复用同一套引用解析。
+              return Reflect.apply(target.on, target, [eventName, async (event: unknown, ctx: unknown) => {
+                const result = await handler(event, ctx);
+                const messages = (result as { messages?: unknown } | undefined)?.messages
+                  ?? (event as { messages?: unknown } | undefined)?.messages;
+                captureHistorySnapshot(pool, ctx, messages);
+                return result;
+              }]);
+            }
             if (eventName !== "before_agent_start") {
               return Reflect.apply(target.on, target, [eventName, handler]);
             }
@@ -302,6 +693,7 @@ export function createLeanAcpExtension(
     });
 
     upstream(leanPi);
+    registerAcpModelsCommand(pi);
     pi.registerTool(decorateWithCollapsedDisplay(facadeTool(tools)));
   };
 }

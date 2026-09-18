@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 import { createJiti } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
 
@@ -119,6 +122,8 @@ function fakeUpstream(calls = [], executions = { count: 0 }) {
       });
     }
     pi.registerTool({ name: "acp_delegate", async execute() {} });
+    // 供 compress 包装层捕获只读快照（透传事件消息即可）
+    pi.on("context", (event) => ({ messages: event.messages }));
     pi.on("before_agent_start", () => ({ systemPrompt: "upstream prompt must be suppressed" }));
   };
 }
@@ -156,38 +161,74 @@ test("cooperates with an optional collapsed-display service without a local file
 });
 
 test("keeps compress direct, retains concise critical descriptions, and rewrites stale status advice", async () => {
-  const calls = [];
-  const pi = createPi();
-  createLeanAcpExtension(fakeUpstream(calls))(pi);
-  const tool = getTool(pi, "compress");
-  const result = await tool.execute(
-    "compress-1",
-    { content: [{ startId: "m1", endId: "m2", summary: "done" }] },
-    undefined,
-    undefined,
-    { cwd: "C:/work" },
-  );
+  // compress 现在先由模型池生成摘要：本测试用空池（临时 agent 目录）直接回退主模型。
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const agentDir = await fs.mkdtemp(path.join(tmpdir(), "acp-facade-"));
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    const calls = [];
+    const pi = createPi();
+    createLeanAcpExtension(fakeUpstream(calls))(pi);
+    const tool = getTool(pi, "compress");
+    const ctx = {
+      sessionManager: { getSessionId: () => "s1", getSessionFile: () => undefined },
+      modelRegistry: {
+        getAll: () => [],
+        find: () => undefined,
+        hasConfiguredAuth: () => false,
+        complete: async () => ({
+          role: "assistant",
+          content: [{ type: "text", text: "GENERATED" }],
+          stopReason: "stop",
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+          timestamp: Date.now(),
+        }),
+      },
+      model: { provider: "main", id: "main-model" },
+    };
+    // 先经过一次 context 事件，填充只读快照
+    await pi.handlers.get("context")[0]({
+      messages: [
+        { role: "user", id: "u1", content: '<acp tokens="1.2K" type="text">m00001</acp>\nalpha' },
+        { role: "user", id: "u2", content: '<acp tokens="0.5K" type="text">m00002</acp>\nbeta' },
+      ],
+    }, ctx);
 
-  const schema = tool.parameters;
-  const entries = schema.properties.content.items.properties;
-  assert.equal(schema.description, undefined);
-  assert.equal(schema.properties.content.description, undefined);
-  assert.match(schema.properties.topic.description, /label/i);
-  assert.match(schema.properties.summaryMaxChars.description, /length/i);
-  assert.match(entries.startId.description, /first/i);
-  assert.match(entries.endId.description, /last/i);
-  assert.match(entries.summary.description, /exact technical details/i);
-  assert.match(entries.topic.description, /label/i);
-  assert.doesNotMatch(JSON.stringify(schema), /large .* description/);
-  const rewritten = result.content[0].text;
-  assert.match(rewritten, /acp_context\(\{ op: "acp_status", args: \{\} \}\)/);
-  assert.match(rewritten, /use acp_context with op "search_context" or "decompress"/i);
-  assert.match(rewritten, /acp_context\(\{ op: "search_context", args: \{ query: "auth token" \} \}\)/);
-  assert.doesNotMatch(rewritten, /\b(?:search_context|decompress|acp_status)\s*\(/);
-  assert.doesNotMatch(rewritten, /\brun acp_status\b/i);
-  assert.doesNotMatch(rewritten, /\buse search_context\b/i);
-  assert.equal(calls[0][0], "compress");
-  assert.deepEqual(calls[0][2], { content: [{ startId: "m1", endId: "m2", summary: "done" }] });
+    const result = await tool.execute(
+      "compress-1",
+      { content: [{ startId: "m00001", endId: "m00002" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    const schema = tool.parameters;
+    const entries = schema.properties.content.items.properties;
+    assert.equal(schema.description, undefined);
+    assert.equal(schema.properties.content.description, undefined);
+    assert.match(schema.properties.topic.description, /label/i);
+    assert.match(schema.properties.summaryMaxChars.description, /length/i);
+    assert.match(entries.startId.description, /first/i);
+    assert.match(entries.endId.description, /last/i);
+    assert.match(entries.summary.description, /compress model pool/i);
+    assert.match(entries.topic.description, /label/i);
+    assert.doesNotMatch(JSON.stringify(schema), /large .* description/);
+    const rewritten = result.content[0].text;
+    assert.match(rewritten, /acp_context\(\{ op: "acp_status", args: \{\} \}\)/);
+    assert.match(rewritten, /use acp_context with op "search_context" or "decompress"/i);
+    assert.match(rewritten, /acp_context\(\{ op: "search_context", args: \{ query: "auth token" \} \}\)/);
+    assert.doesNotMatch(rewritten, /\b(?:search_context|decompress|acp_status)\s*\(/);
+    assert.doesNotMatch(rewritten, /\brun acp_status\b/i);
+    assert.doesNotMatch(rewritten, /\buse search_context\b/i);
+    assert.equal(calls[0][0], "compress");
+    // 上游收到的摘要来自池调用（空池回退主模型），而不是主模型自己写的
+    assert.deepEqual(calls[0][2], {
+      content: [{ startId: "m00001", endId: "m00002", summary: "GENERATED" }],
+    });
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  }
 });
 test("routes all three low-frequency operations with original args and execution context", async () => {
   const cases = [

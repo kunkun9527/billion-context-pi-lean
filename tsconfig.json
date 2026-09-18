@@ -9,6 +9,7 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "index.ts"
+    "index.ts",
+    "compressModels.ts"
   ]
 }
