@@ -6,8 +6,10 @@
 > 内置 `lean` 提示词包
 > （见 [issue #4](https://github.com/kunkun9527/billion-context-pi-lean/issues/4)）。
 > 直接用最新上游，在 `acp.json` 里写 `{ "compress": { "promptPack": "lean" } }`
-> 即可。用前沿模型还想再压的话，在同一个文件里覆盖对应段即可，如
-> `promptSections` / `prompts`（见上游 CONFIGURATION）。本包装保持原样，仅供参考。
+> 即可。说明：包里故意保留了详细的 `howToCompress` 规则，弱模型靠它才不会
+> 压缩出幻觉——如果你用的是前沿模型，还想再压，在同一个文件里覆盖对应段
+> 即可，如 `promptSections` / `prompts`（见上游 CONFIGURATION）。本包装保持
+> 原样，仅供参考。
 
 基于 [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi) 的精简封装。在完整保留上下文压缩引擎的同时，大幅剔除系统提示词与工具 Schema 中的冗余文本，显著降低上下文初始开销。
 

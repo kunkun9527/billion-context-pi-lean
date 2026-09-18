@@ -6,9 +6,11 @@
 > prompts (≈90% kept) as the built-in `lean` prompt pack
 > ([issue #4](https://github.com/kunkun9527/billion-context-pi-lean/issues/4)).
 > Just use the latest upstream with `{ "compress": { "promptPack": "lean" } }`
-> in `acp.json`. Frontier-model users who want even leaner output can override
-> sections in the same file, e.g. `promptSections` / `prompts` (see upstream
-> CONFIGURATION). This wrapper stays as-is for reference.
+> in `acp.json`. Note: the pack deliberately keeps the detailed
+> `howToCompress` rules, which weaker models need to avoid compression
+> hallucinations — if you run frontier models and want to compress further,
+> override sections in the same file, e.g. `promptSections` / `prompts`
+> (see upstream CONFIGURATION). This wrapper stays as-is for reference.
 
 A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi). It retains the upstream context compression engine while eliminating persistent system prompt bloat and redundant tool schemas.
 
