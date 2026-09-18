@@ -64,20 +64,15 @@ acp_context
 
 ## 自己微调提示词
 
-上游已吸收本包装约 90% 的精简提示词，做成内置 `lean` 包，先用它——
-`~/.pi/acp.json`（或 `<项目>/.pi/acp.json`）里加一行：
+上游已吸收本包装约 90% 的精简提示词，做成内置 `lean` 包，先用它——`~/.pi/acp.json`（或 `<项目>/.pi/acp.json`）里加一行：
 
 ```json
 { "compress": { "promptPack": "lean" } }
 ```
 
-想再压，按上游[微调压缩提示词教程](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.zh-CN.md)来：
-第一层就是上面的包，第二层覆盖单个段（`promptSections` / `nudgeSections` /
-`toolPrompts`），第三层替换核心压缩规则（`prompts.*` 加
-`acknowledgePromptsRisk: true`）——也可以直接让 agent 帮你压缩。
+想再压，按上游[微调压缩提示词教程](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.zh-CN.md)来：第一层就是上面的包，第二层覆盖单个段（`promptSections` / `nudgeSections` / `toolPrompts`），第三层替换核心压缩规则（`prompts.*` 加 `acknowledgePromptsRisk: true`）——也可以直接让 agent 帮你压缩。
 
-示例：前沿模型用的 `howToCompress` 覆盖（约 150 token，上游 lean 包里约
-500——长版是故意留的，用来压住弱模型的压缩幻觉）：
+示例：前沿模型用的 `howToCompress` 覆盖（约 150 token，上游 lean 包里约 500——长版是故意留的，用来压住弱模型的压缩幻觉）：
 
 ```json
 {
