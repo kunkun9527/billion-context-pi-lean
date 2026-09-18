@@ -2,6 +2,14 @@
 
 [简体中文](README.zh-CN.md)
 
+> **Deprecated — no longer updated.** Upstream adopted this wrapper's trimmed
+> prompts (≈90% kept) as the built-in `lean` prompt pack
+> ([issue #4](https://github.com/kunkun9527/billion-context-pi-lean/issues/4)).
+> Just use the latest upstream with `{ "compress": { "promptPack": "lean" } }`
+> in `acp.json`. Frontier-model users who want even leaner output can override
+> sections in the same file, e.g. `promptSections` / `prompts` (see upstream
+> CONFIGURATION). This wrapper stays as-is for reference.
+
 A lightweight Pi wrapper for [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi). It retains the upstream context compression engine while eliminating persistent system prompt bloat and redundant tool schemas.
 
 ## Core Features
@@ -56,6 +64,35 @@ acp_context
 ```
 
 Use `help` only when you need to inspect the full upstream schema.
+
+## Tune the prompts yourself
+
+Upstream absorbed ≈90% of this wrapper's trimmed prompts as the built-in
+`lean` pack, so start there — one line in `~/.pi/acp.json`
+(or `<project>/.pi/acp.json`):
+
+```json
+{ "compress": { "promptPack": "lean" } }
+```
+
+To go further, follow upstream's
+[prompt tuning guide](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.md):
+level 1 is the pack above, level 2 overrides single sections
+(`promptSections` / `nudgeSections` / `toolPrompts`), level 3 replaces the
+core compression rules (`prompts.*` plus `acknowledgePromptsRisk: true`) —
+or just ask your agent to compress them for you.
+
+Example: a frontier-model `howToCompress` override (≈150 tokens vs ≈500 in
+the lean pack, which keeps the long version against hallucinations in weaker
+models):
+
+```json
+{
+  "promptSections": {
+    "howToCompress": "HOW TO COMPRESS\nWrite a self-contained replacement. Keep the user's goal and changes, hard constraints, decisions with rationale, exact technical facts, current state, next steps, unresolved questions/TODOs, and useful message refs. Drop consumed or repeated process and verbose outputs; keep failed attempts only as one-line lessons. Use dense bullets under short thematic headers. Never invent, weaken, or generalize exact values."
+  }
+}
+```
 
 ## Context Footprint Benchmark
 

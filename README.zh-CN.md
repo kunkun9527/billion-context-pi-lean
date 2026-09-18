@@ -2,6 +2,13 @@
 
 [English](README.md)
 
+> **已弃用，不再更新。**上游已采纳本包装的精简提示词（保留约 90%），做成
+> 内置 `lean` 提示词包
+> （见 [issue #4](https://github.com/kunkun9527/billion-context-pi-lean/issues/4)）。
+> 直接用最新上游，在 `acp.json` 里写 `{ "compress": { "promptPack": "lean" } }`
+> 即可。用前沿模型还想再压的话，在同一个文件里覆盖对应段即可，如
+> `promptSections` / `prompts`（见上游 CONFIGURATION）。本包装保持原样，仅供参考。
+
 基于 [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi) 的精简封装。在完整保留上下文压缩引擎的同时，大幅剔除系统提示词与工具 Schema 中的冗余文本，显著降低上下文初始开销。
 
 ## 核心特性
@@ -54,6 +61,31 @@ acp_context
 ```
 
 仅在确需查看完整上游 Schema 时调用 `help`。
+
+## 自己微调提示词
+
+上游已吸收本包装约 90% 的精简提示词，做成内置 `lean` 包，先用它——
+`~/.pi/acp.json`（或 `<项目>/.pi/acp.json`）里加一行：
+
+```json
+{ "compress": { "promptPack": "lean" } }
+```
+
+想再压，按上游[微调压缩提示词教程](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.zh-CN.md)来：
+第一层就是上面的包，第二层覆盖单个段（`promptSections` / `nudgeSections` /
+`toolPrompts`），第三层替换核心压缩规则（`prompts.*` 加
+`acknowledgePromptsRisk: true`）——也可以直接让 agent 帮你压缩。
+
+示例：前沿模型用的 `howToCompress` 覆盖（约 150 token，上游 lean 包里约
+500——长版是故意留的，用来压住弱模型的压缩幻觉）：
+
+```json
+{
+  "promptSections": {
+    "howToCompress": "HOW TO COMPRESS\nWrite a self-contained replacement. Keep the user's goal and changes, hard constraints, decisions with rationale, exact technical facts, current state, next steps, unresolved questions/TODOs, and useful message refs. Drop consumed or repeated process and verbose outputs; keep failed attempts only as one-line lessons. Use dense bullets under short thematic headers. Never invent, weaken, or generalize exact values."
+  }
+}
+```
 
 ## 初始化上下文占用对比
 
