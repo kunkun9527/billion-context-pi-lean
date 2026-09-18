@@ -254,9 +254,11 @@ test("generates the summary with the pool model and forwards it to the upstream 
     assert.equal(result.content[0].text, "compressed ok");
     assert.deepEqual(result.details.compressModels.used, ["summarizer [pool]"]);
 
-    // 界面上的模型池标签来自 details，不新增模型可见参数
-    const component = compressTool(pi).renderResult(result, { expanded: false }, {}, {});
+    // 界面上的模型池标签来自 details；可新增一个折叠/展开都可见的「模型池」标签
+    const component = compressTool(pi).renderResult(result, { expanded: false, isPartial: false }, {}, {});
     assert.ok(component.render(80).some((line) => line.includes("模型池：summarizer [pool]")));
+    const expandedComponent = compressTool(pi).renderResult(result, { expanded: true, isPartial: false }, {}, {});
+    assert.ok(expandedComponent.render(80).some((line) => line.includes("模型池：summarizer [pool]")));
   });
 });
 

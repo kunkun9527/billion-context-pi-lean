@@ -343,18 +343,23 @@ function compressModelsTag(details: unknown): string | undefined {
   return failed.length > 0 ? `模型池：${label} · 降级 ${failed.length} 次` : `模型池：${label}`;
 }
 
-/** 上游没有 renderResult 时的兑底渲染：只显示结果首行。 */
-function defaultCompressLines(result: { content?: unknown } | undefined, width: number): string[] {
+/** 上游没有 renderResult 时的兑底渲染：折叠时只显示首行，展开时保留全部行。 */
+function defaultCompressLines(
+  result: { content?: unknown } | undefined,
+  width: number,
+  expanded: boolean,
+): string[] {
   const parts = Array.isArray(result?.content) ? result.content : [];
-  const first = parts.find(
-    (part): part is { type: "text"; text: string } =>
-      Boolean(part) &&
-      typeof part === "object" &&
-      (part as { type?: unknown }).type === "text" &&
-      typeof (part as { text?: unknown }).text === "string",
-  );
-  const text = (first?.text ?? "compress").split("\n")[0];
-  return [text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text];
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    const block = part as { type?: unknown; text?: unknown };
+    if (block.type === "text" && typeof block.text === "string") texts.push(block.text);
+  }
+  const text = texts.join("\n").replace(/\s+$/, "");
+  const lines = text.length > 0 ? text.split("\n") : ["compress"];
+  const shown = expanded ? lines : lines.slice(0, 1);
+  return shown.map((line) => (line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line));
 }
 
 /** 包装 compress 渲染：保留上游渲染（如有），追加一行模型池标签。 */
@@ -363,9 +368,10 @@ function wrapCompressRender(tool: CapturedTool): CapturedTool["renderResult"] {
   return (result, options, theme, context) => {
     const base = upstream?.(result, options, theme, context);
     const tag = compressModelsTag(result?.details);
+    const expanded = options?.expanded !== false;
     return {
       render: (width: number) => {
-        const lines = base ? base.render(width) : defaultCompressLines(result, width);
+        const lines = base ? base.render(width) : defaultCompressLines(result, width, expanded);
         return tag ? [...lines, `  ${tag}`] : lines;
       },
       invalidate: () => base?.invalidate?.(),
