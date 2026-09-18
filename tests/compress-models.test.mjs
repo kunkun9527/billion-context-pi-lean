@@ -137,7 +137,7 @@ test("resolves the agent config dir with PI_CODING_AGENT_DIR overrides", () => {
 
 // ── 2. 编辑器状态机与按键 ───────────────────────────────────────────────
 
-function editorFixture({ enabled = ["sub2/deepseek-flash"], models = [] } = {}) {
+function editorFixture({ enabled = ["sub2/deepseek-flash"], models = [], available } = {}) {
   const config = {
     version: 1,
     models: enabled.map((key) => ({ provider: key.split("/")[0], modelId: key.split("/")[1] })),
@@ -145,29 +145,119 @@ function editorFixture({ enabled = ["sub2/deepseek-flash"], models = [] } = {}) 
   const all = models.length > 0
     ? models
     : [model("sub2", "deepseek-flash"), model("openai-codex", "gpt-5.6-luna"), model("anthropic", "claude-x")];
-  const rows = pool.buildPoolRows(all, config, () => true);
-  return new pool.PoolEditor(rows);
+  const plan = pool.buildPoolPlan(all, config, available ?? (() => true));
+  return new pool.PoolEditor(plan.rows, plan.hidden);
 }
 
-test("enabled queue stays on top and keeps saved order, missing models stay in place", () => {
-  const editor = editorFixture({ enabled: ["anthropic/claude-x", "sub2/deepseek-flash"] });
-  assert.deepEqual(
-    editor.queue.map((row) => row.key),
-    ["anthropic/claude-x", "sub2/deepseek-flash"],
+test("shows only authenticated models and preserves unavailable saved entries", () => {
+  const all = [
+    model("sub2", "deepseek-flash"),
+    model("openai-codex", "gpt-5.6-luna"),
+    model("anthropic", "claude-x"),
+    model("ghost", "gone"),
+  ];
+  const plan = pool.buildPoolPlan(
+    all,
+    {
+      version: 1,
+      models: [
+        { provider: "ghost", modelId: "gone" }, // 未配置认证 → 隐藏
+        { provider: "sub2", modelId: "deepseek-flash" }, // 可用 → 入池
+        { provider: "anthropic", modelId: "claude-x" }, // 认证判定抛错 → 隐藏
+        { provider: "missing", modelId: "vanished" }, // 注册表中已不存在 → 隐藏
+        { provider: "ghost", modelId: "gone" }, // 重复条目 → 去重
+      ],
+    },
+    (m) => {
+      if (m.provider === "anthropic") throw new Error("auth backend down");
+      return m.provider !== "ghost";
+    },
   );
+  // 只显示可用模型：已入池的排在顶部，其余保持注册表相对顺序
+  assert.deepEqual(plan.rows.map((row) => row.key), ["sub2/deepseek-flash", "openai-codex/gpt-5.6-luna"]);
+  assert.deepEqual(plan.rows.map((row) => row.enabled), [true, false]);
+  // 不可用但已保存的条目按原顺序保留，且不会重复
+  assert.deepEqual(plan.hidden, [
+    { provider: "ghost", modelId: "gone" },
+    { provider: "anthropic", modelId: "claude-x" },
+    { provider: "missing", modelId: "vanished" },
+  ]);
+  // 没有任何不可用条目时 hidden 为空
+  assert.deepEqual(pool.buildPoolPlan(all, { version: 1, models: [] }, () => true).hidden, []);
+});
+
+test("keeps same-name models from different providers apart and dedupes registry entries", () => {
+  const plan = pool.buildPoolPlan(
+    [model("a", "shared"), model("b", "shared"), model("a", "shared")],
+    { version: 1, models: [] },
+    () => true,
+  );
+  assert.deepEqual(plan.rows.map((row) => row.key), ["a/shared", "b/shared"]);
+  assert.deepEqual(plan.rows.map((row) => row.label), ["shared [a]", "shared [b]"]);
+});
+
+test("enabled queue stays on top, keeps saved order, and hidden entries are appended on save", () => {
+  const editor = editorFixture({ enabled: ["anthropic/claude-x", "sub2/deepseek-flash"] });
+  assert.deepEqual(editor.queue.map((row) => row.key), ["anthropic/claude-x", "sub2/deepseek-flash"]);
   assert.deepEqual(editor.rows.slice(0, 2).map((row) => row.key), ["anthropic/claude-x", "sub2/deepseek-flash"]);
 
-  // 已保存但注册表中消失的模型：保留顺位并标记为不可用
-  const missing = new pool.PoolEditor(
-    pool.buildPoolRows([model("sub2", "deepseek-flash")], {
+  // 已保存但当前不可用的条目：不生成行、不能被选中，但保存时无损追回
+  const plan = pool.buildPoolPlan(
+    [model("sub2", "deepseek-flash")],
+    {
       version: 1,
-      models: [{ provider: "ghost", modelId: "gone" }, { provider: "sub2", modelId: "deepseek-flash" }],
-    }, () => true),
+      models: [
+        { provider: "ghost", modelId: "one" },
+        { provider: "sub2", modelId: "deepseek-flash" },
+        { provider: "ghost", modelId: "two" },
+      ],
+    },
+    () => true,
   );
-  assert.equal(missing.rows[0].key, "ghost/gone");
-  assert.equal(missing.rows[0].registered, false);
-  assert.equal(missing.rows[0].available, false);
-  assert.equal(missing.queue.length, 2);
+  const hiddenEditor = new pool.PoolEditor(plan.rows, plan.hidden);
+  assert.deepEqual(plan.rows.map((row) => row.key), ["sub2/deepseek-flash"]);
+  assert.match(hiddenEditor.statusLine(), /已保留 2 个当前不可用配置/);
+  assert.deepEqual(hiddenEditor.toConfig().models, [
+    { provider: "sub2", modelId: "deepseek-flash" },
+    { provider: "ghost", modelId: "one" },
+    { provider: "ghost", modelId: "two" },
+  ]);
+  // 可见模型全部停用后仍能保存（文件里只剩隐藏条目，顺序不变）
+  hiddenEditor.toggleEnabled();
+  assert.deepEqual(hiddenEditor.queue, []);
+  assert.deepEqual(hiddenEditor.toConfig().models, [
+    { provider: "ghost", modelId: "one" },
+    { provider: "ghost", modelId: "two" },
+  ]);
+});
+
+test("space outside the pool only explains the next step; reordering follows the model", () => {
+  const editor = editorFixture({ enabled: ["sub2/deepseek-flash"] });
+  editor.cursor = 1; // gpt-5.6-luna（未启用）
+  assert.equal(editor.current.key, "openai-codex/gpt-5.6-luna");
+  assert.equal(editor.toggleSelect(), true);
+  assert.equal(editor.moving, false);
+  assert.equal(editor.selectedKey, null);
+  assert.match(editor.notice, /先按回车启用/);
+
+  // 排序后光标跟着模型走（而不是保留原行号），并标记草稿已修改
+  const queueEditor = editorFixture({
+    enabled: ["anthropic/claude-x", "sub2/deepseek-flash", "openai-codex/gpt-5.6-luna"],
+  });
+  assert.equal(queueEditor.dirty, false);
+  queueEditor.moveCursor(1);
+  assert.equal(queueEditor.current.key, "sub2/deepseek-flash");
+  queueEditor.toggleSelect();
+  assert.equal(queueEditor.moveSelected(1), true);
+  assert.deepEqual(queueEditor.queue.map((row) => row.key), [
+    "anthropic/claude-x",
+    "openai-codex/gpt-5.6-luna",
+    "sub2/deepseek-flash",
+  ]);
+  assert.equal(queueEditor.cursor, 2);
+  assert.equal(queueEditor.current.key, "sub2/deepseek-flash");
+  assert.equal(queueEditor.dirty, true);
+  assert.match(queueEditor.statusLine(), /未保存/);
 });
 
 test("space selects and unselects; arrows reorder only inside the enabled queue", () => {
@@ -270,47 +360,200 @@ test("maps legacy and kitty key sequences to editor actions", () => {
   assert.equal(pool.isPrintableInput("\x1b[A"), false);
 });
 
-test("component renders queue numbers, scroll hints, and mode-specific key hints", () => {
+test("renders a single themed panel with sections and no availability markers", () => {
   const editor = editorFixture({ enabled: ["anthropic/claude-x"] });
-  const lines = pool.renderPoolLines(editor, 80);
-  assert.match(lines[0], /压缩模型顺位池/);
-  assert.match(lines[1], /启用 1/);
-  assert.ok(lines.some((line) => /1 .*claude-x/.test(line)));
-  assert.ok(lines.some((line) => line.includes("Ctrl+S")));
+  const lines = pool.renderPoolLines(editor, 80, { height: 24 });
+  assert.match(lines[0], /^╭─ 压缩模型池/); // 外边框与标题
+  assert.match(lines.at(-1), /^╰─+╯$/); // 底边框
+  assert.ok(lines[1].includes("可用 3"));
+  assert.ok(lines[1].includes("已启用 1"));
+  assert.ok(lines.some((line) => line.includes("压缩池顺位（1）")));
+  assert.ok(lines.some((line) => line.includes("其他可用模型（2）")));
+  assert.ok(lines.some((line) => /1 ● claude-x +\[anthropic\]/.test(line)));
+  assert.ok(lines.some((line) => line.includes("○ gpt-5.6-luna")));
+  assert.ok(lines.some((line) => line.includes("Ctrl+S 保存")));
+  // 可用性标记与图例已移除，只保留启用/停用状态
+  assert.ok(!lines.some((line) => /[✓×]|图例/.test(line)));
+  for (const line of lines) assert.equal(pool.displayWidth(line), 80, line);
 
-  editor.toggleSelect();
-  const movingLines = pool.renderPoolLines(editor, 80);
-  assert.ok(movingLines.some((line) => /调整顺位/.test(line)));
+  // 搜索栏固定；光标行仍能用 > 定位（不只靠颜色）
+  editor.search = "claude";
+  const searched = pool.renderPoolLines(editor, 80, { height: 24 });
+  assert.ok(searched.some((line) => line.includes("搜索：claude")));
+  assert.ok(searched.some((line) => /│ >\s+1 ● claude-x/.test(line))); // 光标行保留 > 定位
+  editor.search = "";
 
-  // 长列表出现滚动提示
-  const big = new pool.PoolEditor(
-    pool.buildPoolRows(
-      Array.from({ length: 40 }, (_, index) => model("p", `m${index}`)),
-      { version: 1, models: [{ provider: "p", modelId: "m0" }] },
-      () => true,
-    ),
-  );
-  const scrolled = pool.renderPoolLines(big, 60, 5);
-  assert.ok(scrolled.some((line) => /还有/.test(line)));
+  // 主题着色：上色后行宽仍不超宽，且边框/标题/光标行都被着色
+  const theme = {
+    fg: (color, text) => `\u001b[38;5;1m${text}\u001b[0m`,
+    bg: (color, text) => `\u001b[48;5;4m${text}\u001b[0m`,
+  };
+  const colored = pool.renderPoolLines(editor, 60, { height: 20, theme });
+  assert.ok(colored.some((line) => line.includes("\u001b[38;5;1m")));
+  assert.ok(colored.some((line) => line.includes("\u001b[48;5;4m")));
+  for (const line of colored) assert.ok(pool.displayWidth(line) <= 60, line);
+
+  // 主题抛错时退化为纯文本，不打断界面
+  const broken = { fg: () => { throw new Error("unknown color"); }, bg: () => { throw new Error("unknown color"); } };
+  for (const line of pool.renderPoolLines(editor, 60, { height: 20, theme: broken })) {
+    assert.ok(pool.displayWidth(line) <= 60, line);
+  }
 });
 
-test("component routes keys to the editor and finishes on save/cancel", () => {
+test("keeps hints, scroll state, and empty states correct under width pressure", () => {
+  const editor = editorFixture({ enabled: ["anthropic/claude-x"] });
+  editor.search = "luna";
+  editor.cursor = 0;
+  const searchLines = pool.renderPoolLines(editor, 72, { height: 24 });
+  assert.ok(searchLines.some((line) => line.includes("+U 清空搜索")));
+  assert.ok(searchLines.some((line) => line.includes("其他可用模型（1）")));
+  editor.search = "";
+
+  // 搜索无匹配与「没有可用模型」是两种不同空状态文案
+  editor.search = "nothing-here";
+  assert.ok(pool.renderPoolLines(editor, 72, { height: 24 }).some((line) => line.includes("未找到匹配")));
+  const empty = pool.renderPoolLines(new pool.PoolEditor([]), 72, { height: 24 });
+  assert.ok(empty.some((line) => line.includes("没有已配置认证的模型")));
+
+  // 长列表：滚动提示 + 窗口顶部的分区归属仍然清楚
+  const big = new pool.PoolEditor(
+    pool.buildPoolPlan(
+      Array.from({ length: 40 }, (_, index) => model("p", `m${String(index).padStart(2, "0")}`)),
+      { version: 1, models: [{ provider: "p", modelId: "m00" }] },
+      () => true,
+    ).rows,
+  );
+  big.cursor = 20;
+  const scrolled = pool.renderPoolLines(big, 60, { height: 20 });
+  assert.ok(scrolled.some((line) => /↑ 还有/.test(line)));
+  assert.ok(scrolled.some((line) => /↓ 还有/.test(line)));
+  assert.ok(scrolled.some((line) => line.includes("其他可用模型（39）")));
+  for (const line of scrolled) assert.ok(pool.displayWidth(line) <= 60, line);
+
+  // 排序提示 + 列表最多 12 行（分区标题不计入模型行）
+  big.moving = true;
+  big.selectedKey = "p/m00";
+  const movingLines = pool.renderPoolLines(big, 60, { height: 40 });
+  assert.ok(movingLines.some((line) => line.includes("排序中：p/m00")));
+  assert.equal(movingLines.filter((line) => /[●○]/.test(line)).length, 12);
+
+  // 极小终端：只给一句可操作提示，仍能 Esc 退出
+  assert.equal(pool.renderPoolLines(editor, 20, { height: 24 }).length, 1);
+  assert.match(pool.renderPoolLines(editor, 20, { height: 24 })[0], /窗口过小/);
+  assert.ok(pool.renderPoolLines(editor, 60, { height: 6 }).length === 1);
+
+  // 中文 / emoji / 超长名称在各宽度下都不越界
+  const unicodeEditor = editorFixture({
+    enabled: [],
+    models: [model("emoji-供应商", "模型-🚀-超长名称-abcdefghijklmnop"), model("p", "短名")],
+  });
+  for (const width of [24, 32, 48, 90]) {
+    for (const line of pool.renderPoolLines(unicodeEditor, width, { height: 12 })) {
+      assert.ok(pool.displayWidth(line) <= width, `宽度 ${width}：${line}`);
+    }
+  }
+});
+
+test("measures and truncates display width for ANSI, CJK, and emoji", () => {
+  assert.equal(pool.displayWidth("abc"), 3);
+  assert.equal(pool.displayWidth("中文"), 4);
+  assert.equal(pool.displayWidth("🚀"), 2);
+  assert.equal(pool.displayWidth("\u001b[31m红色\u001b[0m"), 4);
+  assert.equal(pool.displayWidth("e\u0301"), 1); // 组合记号不占列
+  assert.equal(pool.truncatePoolLine("中文名称", 5), "中文…");
+  assert.equal(pool.truncatePoolLine("abcdef", 4), "abc…");
+  assert.equal(pool.truncatePoolLine("abc", 10), "abc");
+  assert.equal(pool.truncatePoolLine("abcdef", 1), "…");
+  assert.equal(pool.truncatePoolLine("abc", 0), "");
+  const colored = pool.truncatePoolLine("\u001b[31m长长长长长长\u001b[0m", 5);
+  assert.ok(colored.includes("\u001b[31m")); // 颜色序列保留
+  assert.ok(pool.displayWidth(colored) <= 5);
+});
+
+test("component routes keys to the editor and closes without writing on cancel", () => {
   const editor = editorFixture({ enabled: [] });
   const finishes = [];
   let renders = 0;
+  let saves = 0;
   const component = pool.createPoolEditorComponent({
     editor,
     requestRender: () => {
       renders += 1;
+    },
+    onSave: async () => {
+      saves += 1;
+      return null;
     },
     onDone: (result) => finishes.push(result),
   });
   component.handleInput("\r"); // 启用第一行
   assert.equal(renders, 1);
   assert.equal(editor.queue.length, 1);
-  component.handleInput("\x13"); // Ctrl+S
-  component.handleInput("\x1b"); // Esc
-  assert.deepEqual(finishes, ["save", "cancel"]);
+  component.handleInput("\x1b"); // Esc：不写入、不保存
+  assert.deepEqual(finishes, ["cancel"]);
+  assert.equal(saves, 0);
+});
+
+test("component saves inside the panel, retries after a failure, and closes only on success", async () => {
+  const editor = editorFixture({ enabled: [] });
+  const finishes = [];
+  let renders = 0;
+  let saves = 0;
+  const component = pool.createPoolEditorComponent({
+    editor,
+    requestRender: () => {
+      renders += 1;
+    },
+    onSave: async () => {
+      saves += 1;
+      return saves === 1 ? "EACCES: 只读文件系统" : null;
+    },
+    onDone: (result) => finishes.push(result),
+  });
+  component.handleInput("\r");
+  component.handleInput("\x13"); // 第一次保存失败
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(saves, 1);
+  assert.deepEqual(finishes, []); // 失败不关闭界面
+  assert.ok(renders >= 2); // 「保存中」与失败各重绘一次
+  const failed = component.render(80);
+  assert.ok(failed.some((line) => line.includes("保存失败：EACCES")));
+  assert.ok(failed.some((line) => line.includes("已启用 1"))); // 草稿与编辑保留
+
+  component.handleInput("\x13"); // 重试成功后才关闭
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(saves, 2);
+  assert.deepEqual(finishes, ["save"]);
+});
+
+test("component ignores every key while the atomic write is in flight", async () => {
+  const editor = editorFixture({ enabled: ["sub2/deepseek-flash"] });
+  const finishes = [];
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let saves = 0;
+  const component = pool.createPoolEditorComponent({
+    editor,
+    requestRender: () => {},
+    onSave: () => {
+      saves += 1;
+      return gate.then(() => null);
+    },
+    onDone: (result) => finishes.push(result),
+  });
+  component.handleInput("\x13"); // 开始保存
+  assert.ok(component.render(80).some((line) => line.includes("保存中")));
+  component.handleInput("\r"); // 保存中禁止编辑
+  component.handleInput("\x1b"); // 保存中暂不响应关闭
+  component.handleInput("\x13"); // 也不会重复写入
+  assert.equal(saves, 1);
+  assert.equal(editor.queue.length, 1);
+  assert.deepEqual(finishes, []);
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(finishes, ["save"]);
 });
 
 // ── 3. 历史快照 ─────────────────────────────────────────────────────────

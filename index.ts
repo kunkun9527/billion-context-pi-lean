@@ -10,7 +10,8 @@ import { Check, Errors } from "typebox/value";
 import {
   DEFAULT_SUMMARY_MAX_CHARS,
   PoolEditor,
-  buildPoolRows,
+  buildPoolPlan,
+  clearCompressModelsDraft,
   compressModelsConfigPath,
   createHistorySnapshot,
   createPoolEditorComponent,
@@ -526,7 +527,12 @@ function wrapCompress(tool: CapturedTool, pool: PoolRuntime): CapturedTool {
 
 // ─── /acp-models 命令 ──────────────────────────────────────────────────
 
-/** 打开模型池配置界面：Ctrl+S 保存，Esc 放弃；损坏配置不覆盖、保存失败保留草稿。 */
+/**
+ * 打开模型池配置界面：只列出已配置认证的模型（界面上不再出现 ✓/×/? 标记）。
+ * 保存改在界面内异步执行：Ctrl+S 先写临时文件再原子替换，成功才关闭；
+ * 失败则留在界面保留搜索/光标/草稿，可重试或 Esc 放弃（不写入、不重排原配置）；
+ * 已保存但当前不可用的条目会原样保留在配置里（界面只在状态栏提示数量）。
+ */
 async function runAcpModelsCommand(ctx: any): Promise<void> {
   const ui = ctx?.ui;
   const registry = ctx?.modelRegistry as ModelRegistryLike | undefined;
@@ -546,7 +552,8 @@ async function runAcpModelsCommand(ctx: any): Promise<void> {
   const draft = takeCompressModelsDraft();
   if (loaded.status === "missing") {
     ui.notify(`[模型池] 未找到 ${configFile}：默认使用当前主模型，保存后会创建该文件。`, "info");
-  } else if (draft) {
+  }
+  if (draft) {
     ui.notify("[模型池] 已恢复上次未保存的草稿。", "info");
   }
 
@@ -556,26 +563,43 @@ async function runAcpModelsCommand(ctx: any): Promise<void> {
   } catch {
     models = [];
   }
-  const rows = buildPoolRows(models, draft ?? loaded.config, (model) => {
+  // 打开界面时取一次可用性快照，编辑过程中不后台刷新，避免认证状态变化造成列表跳动。
+  const plan = buildPoolPlan(models, draft ?? loaded.config, (model) => {
     try {
       return Boolean(registry.hasConfiguredAuth(model));
     } catch {
       return false;
     }
   });
-  const editor = new PoolEditor(rows);
+  const editor = new PoolEditor(plan.rows, plan.hidden);
 
   const choice = await ui.custom(
     (
-      tui: { requestRender?: () => void },
+      tui: { requestRender?: () => void; terminal?: { rows?: number } },
       theme: unknown,
       _keybindings: unknown,
       done: (result: "save" | "cancel") => void,
     ) =>
       createPoolEditorComponent({
         editor,
-        theme: theme as { fg?: (color: string, text: string) => string },
+        theme: theme as {
+          fg?: (color: string, text: string) => string;
+          bg?: (color: string, text: string) => string;
+        },
         requestRender: () => tui?.requestRender?.(),
+        // 终端高度决定列表行数：标题/搜索/提示/反馈优先，列表最多 12 行。
+        height: () => {
+          const rows = tui?.terminal?.rows;
+          return typeof rows === "number" && rows > 0 ? rows : 24;
+        },
+        // 界面内异步保存：只返回失败原因，关闭与提示由组件和本命令统一处理。
+        onSave: async () => {
+          const saved = await saveCompressModelsConfig(configFile, editor.toConfig());
+          if (saved.ok) return null;
+          // 写盘失败：草稿留在进程内，即使随后 Esc 退出也能在下次打开时恢复（不写入、不重排原配置）。
+          rememberCompressModelsDraft(editor.toConfig());
+          return saved.error;
+        },
         onDone: done,
       }),
   );
@@ -584,15 +608,14 @@ async function runAcpModelsCommand(ctx: any): Promise<void> {
     ui.notify("[模型池] 已放弃本次修改。", "info");
     return;
   }
-  const saved = await saveCompressModelsConfig(configFile, editor.toConfig());
-  if (!saved.ok) {
-    rememberCompressModelsDraft(editor.toConfig());
-    ui.notify(`[模型池] 保存失败：${saved.error}；草稿已保留，下次 /acp-models 会恢复。`, "error");
-    return;
-  }
-  const count = editor.toConfig().models.length;
+  clearCompressModelsDraft(); // 已落盘，进程内草稿不再需要
+  const enabledCount = editor.queue.length;
+  const hiddenCount = editor.hidden.length;
+  const kept = hiddenCount > 0 ? `；另保留 ${hiddenCount} 个当前不可用的配置。` : "。";
   ui.notify(
-    count === 0 ? "[模型池] 已清空顺位：摘要将由当前主模型生成。" : `[模型池] 已保存 ${count} 个模型的顺位。`,
+    enabledCount === 0
+      ? `[模型池] 已清空顺位：摘要将由当前主模型生成${hiddenCount > 0 ? kept : "。"}`
+      : `[模型池] 已保存 ${enabledCount} 个模型的顺位${kept}`,
     "info",
   );
 }

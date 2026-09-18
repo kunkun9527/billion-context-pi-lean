@@ -262,75 +262,92 @@ export function clearCompressModelsDraft(): void {
 // 3. 模型池列表与编辑器状态机
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 列表中的一行模型：启用队列置顶，其余为注册表中尚未启用的模型。 */
+/**
+ * 列表中的一行模型。
+ * 只有「当前可用」的模型才会生成行：可用 = 注册表中存在且已配置认证。
+ * 可用性标记（✓/×/?）不再出现在界面里，因此这里不保存任何可用性字段。
+ */
 export type PoolRow = {
   key: string;
   provider: string;
   modelId: string;
   label: string;
-  /** 注册表中存在且（若可判断）已配置认证。 */
-  available: boolean;
-  /** 注册表中是否存在该模型（已保存但消失的模型会保留顺位并标记 false）。 */
-  registered: boolean;
-  /** 是否在启用队列中。 */
+  /** 是否在压缩池（启用队列）中。 */
   enabled: boolean;
 };
 
+/** 界面构建结果：可见行 + 因当前不可用而隐藏、但仍需无损保留的已保存条目。 */
+export type PoolPlan = {
+  /** 可见行：压缩池已启用者按保存顺位在前，其余可用模型按注册表相对顺序在后。 */
+  rows: PoolRow[];
+  /** 已保存但当前不可用的条目（注册表缺失 / 未配置认证 / 认证判定抛错）。 */
+  hidden: CompressModelRef[];
+};
+
 /**
- * 构建列表行：
- *   - 已启用模型按配置顺位排在顶部；注册表中已消失的模型保留原顺位，标为不可用；
- *   - 其余模型跟随其后（可用者在前），保持注册表原有顺序。
- * 这样「启用队列始终排在列表顶部」，光标移动与顺位调整不会产生歧义。
+ * 构建界面数据（过滤 + 排序）：
+ *   1. 只保留「注册表中存在且已配置认证」的模型；认证判定抛错视为不可用；
+ *   2. 已保存条目按配置顺位排到最前，其余可用模型保持注册表相对顺序跟随其后；
+ *   3. 已保存但当前不可用的条目「既不生成行（不能被光标选中），也不丢弃」，
+ *      放进 hidden 交给编辑器在保存时按原相对顺序追加回去，
+ *      避免临时认证失效把用户的顺位配置抹掉。
  */
-export function buildPoolRows(
+export function buildPoolPlan(
   models: readonly PiModelLike[],
   config: CompressModelsConfig,
   isAvailable: (model: PiModelLike) => boolean,
-): PoolRow[] {
+): PoolPlan {
+  // 注册表内按 { provider, modelId } 去重（同名不同 provider 不合并），保留首次出现的顺序。
+  const registryOrder: string[] = [];
   const byKey = new Map<string, PiModelLike>();
   for (const model of models) {
     const key = compressModelKey({ provider: model.provider, modelId: model.id });
-    if (!byKey.has(key)) byKey.set(key, model);
+    if (byKey.has(key)) continue;
+    byKey.set(key, model);
+    registryOrder.push(key);
+  }
+
+  // 认证判定可能抛错，统一降级为「不可用」。
+  const availableKeys = new Set<string>();
+  for (const key of registryOrder) {
+    const model = byKey.get(key);
+    if (model && safeIsAvailable(model, isAvailable)) availableKeys.add(key);
   }
 
   const rows: PoolRow[] = [];
-  const usedKeys = new Set<string>();
+  const hidden: CompressModelRef[] = [];
+  const seen = new Set<string>();
+  // 1) 已保存条目：可用的成为「压缩池」分区行，不可用的进入 hidden。
   for (const ref of config.models) {
     const key = compressModelKey(ref);
-    if (usedKeys.has(key)) continue;
-    usedKeys.add(key);
-    const model = byKey.get(key);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (availableKeys.has(key)) {
+      rows.push({
+        key,
+        provider: ref.provider,
+        modelId: ref.modelId,
+        label: formatCompressModelLabel(ref.provider, ref.modelId),
+        enabled: true,
+      });
+    } else {
+      hidden.push({ provider: ref.provider, modelId: ref.modelId });
+    }
+  }
+  // 2) 其余可用模型：保持注册表相对顺序，排在压缩池之后。
+  for (const key of registryOrder) {
+    if (seen.has(key) || !availableKeys.has(key)) continue;
+    seen.add(key);
+    const model = byKey.get(key) as PiModelLike;
     rows.push({
       key,
-      provider: ref.provider,
-      modelId: ref.modelId,
-      label: formatCompressModelLabel(ref.provider, ref.modelId),
-      available: model ? safeIsAvailable(model, isAvailable) : false,
-      registered: Boolean(model),
-      enabled: true,
-    });
-  }
-
-  // 未启用的模型：先可用后不可用，组内保持注册表顺序，未启用行不属于队列。
-  const rest = models
-    .filter((model) => !usedKeys.has(compressModelKey({ provider: model.provider, modelId: model.id })))
-    .map((model) => ({
-      model,
-      available: safeIsAvailable(model, isAvailable),
-    }));
-  rest.sort((a, b) => Number(b.available) - Number(a.available));
-  for (const { model, available } of rest) {
-    rows.push({
-      key: compressModelKey({ provider: model.provider, modelId: model.id }),
       provider: model.provider,
       modelId: model.id,
       label: formatCompressModelLabel(model.provider, model.id),
-      available,
-      registered: true,
       enabled: false,
     });
   }
-  return rows;
+  return { rows, hidden };
 }
 
 /** hasConfiguredAuth 在某些宿主状态下可能抛错，这里降级为「不可用」。 */
@@ -370,20 +387,28 @@ export function resolvePoolCandidates(
 /**
  * 编辑器状态机（纯逻辑，便于用 node --test 直接验证交互规则）：
  *   - ↑/↓ 移动光标；
- *   - 空格选中当前行进入移动模式，再按空格取消；
- *   - 移动模式下 ↑/↓ 只能在启用队列内部调整顺位，不能跨越启用/停用分界；
- *   - 回车切换启用/停用；新启用的模型追加到启用队列末尾；
- *   - 搜索状态下禁止排序，避免隐藏项造成顺位歧义。
+ *   - 空格选中当前行进入排序模式，再按空格取消；停用行会提示先按回车启用；
+ *   - 排序模式下 ↑/↓ 只能在压缩池内部调整顺位，不能跨越分区；
+ *   - 回车切换启用/停用；新启用的模型追加到队列末尾；
+ *   - 搜索状态下禁止排序，避免隐藏项造成顺位歧义；进入搜索会退出排序选择；
+ *   - 任何行列变化后光标都跟着「模型标识」走，而不是留在原行号。
  */
 export class PoolEditor {
   readonly rows: PoolRow[];
+  /** 已保存但当前不可用的条目：界面不显示，保存时按原相对顺序追加回去。 */
+  readonly hidden: CompressModelRef[];
   cursor = 0;
   search = "";
   moving = false;
   selectedKey: string | null = null;
+  /** 草稿是否被编辑过（状态栏的「未保存」提示）。 */
+  dirty = false;
+  /** 最近一次操作的反馈（如「请先按回车启用」），下一次编辑动作时清除。 */
+  notice: string | null = null;
 
-  constructor(rows: readonly PoolRow[]) {
+  constructor(rows: readonly PoolRow[], hidden: readonly CompressModelRef[] = []) {
     this.rows = rows.map((row) => ({ ...row }));
+    this.hidden = hidden.map((ref) => ({ ...ref }));
   }
 
   /** 当前搜索结果下的可见行（搜索为空即全部行）。 */
@@ -425,24 +450,35 @@ export class PoolEditor {
     return true;
   }
 
-  /** 空格：未选中 → 选中当前行进入移动模式；已选中当前行 → 取消选中。 */
+  /**
+   * 空格：停用行提示先按回车启用；已选中当前行 → 取消选中；否则进入排序模式。
+   * 返回值表示「界面需要重绘」（包括仅提示消息变化的情况）。
+   */
   toggleSelect(): boolean {
     const row = this.current;
     if (!row) return false;
     if (this.moving && this.selectedKey === row.key) {
       this.moving = false;
       this.selectedKey = null;
+      this.notice = null;
+      return true;
+    }
+    if (!row.enabled) {
+      // 压缩池之外的模型不能排序：提示用户先把它加进池子。
+      this.notice = "该模型尚未加入压缩池：先按回车启用，再按空格排序";
       return true;
     }
     this.moving = true;
     this.selectedKey = row.key;
+    this.notice = null;
     return true;
   }
 
-  /** 回车：切换当前行启用/停用；新启用追加到队列末尾，停用退出队列。 */
+  /** 回车：切换当前行启用/停用；新启用追加到队列末尾，停用退出队列，光标跟随该模型。 */
   toggleEnabled(): boolean {
     const row = this.current;
     if (!row) return false;
+    this.notice = null;
     if (row.enabled) {
       row.enabled = false;
       if (this.selectedKey === row.key) {
@@ -472,10 +508,12 @@ export class PoolEditor {
       }
     }
     this.clampCursor();
+    this.focusKey(row.key); // 光标跟随模型标识，而非保留原行号
+    this.dirty = true;
     return true;
   }
 
-  /** 移动模式下调整选中行在启用队列内的顺位；搜索中或不在队列内一律拒绝。 */
+  /** 排序模式下调整选中行在压缩池内的顺位；搜索中或不在池内一律拒绝。 */
   moveSelected(delta: number): boolean {
     if (!this.moving || !this.selectedKey || this.searching) return false;
     const row = this.rows.find((candidate) => candidate.key === this.selectedKey);
@@ -490,15 +528,20 @@ export class PoolEditor {
     if (from < 0 || to < 0) return false;
     this.rows.splice(from, 1);
     this.rows.splice(to, 0, row);
-    this.clampCursor();
+    this.focusKey(row.key); // 光标跟随被移动的模型（顺位变化后行号会变）
+    this.notice = null;
+    this.dirty = true;
     return true;
   }
 
-  /** 追加搜索字符。 */
+  /** 追加搜索字符；进入搜索时退出排序选择（搜索中禁止排序）。 */
   appendSearch(text: string): boolean {
     if (!text) return false;
     this.search += text;
     this.cursor = 0;
+    this.moving = false;
+    this.selectedKey = null;
+    this.notice = null;
     return true;
   }
 
@@ -518,20 +561,35 @@ export class PoolEditor {
     return true;
   }
 
-  /** 生成待保存配置：队列顺序即顺位。 */
+  /** 生成待保存配置：压缩池顺序即顺位，最后追回当前不可见的已保存条目（去重、无损）。 */
   toConfig(): CompressModelsConfig {
-    return {
-      version: COMPRESS_MODELS_CONFIG_VERSION,
-      models: this.queue.map((row) => ({ provider: row.provider, modelId: row.modelId })),
-    };
+    const models: CompressModelRef[] = this.queue.map((row) => ({
+      provider: row.provider,
+      modelId: row.modelId,
+    }));
+    const seen = new Set(models.map((ref) => compressModelKey(ref)));
+    for (const ref of this.hidden) {
+      const key = compressModelKey(ref);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      models.push({ provider: ref.provider, modelId: ref.modelId });
+    }
+    return { version: COMPRESS_MODELS_CONFIG_VERSION, models };
   }
 
-  /** 状态行：启用数量 / 移动模式 / 搜索词。 */
+  /** 状态栏文案：可用数量 · 压缩池启用数量 · 未保存状态 · 隐藏配置提示。 */
   statusLine(): string {
-    const parts = [`启用 ${this.queue.length}`, `可选 ${this.rows.length}`];
-    if (this.moving && this.selectedKey) parts.push(`排序中：${this.selectedKey}`);
-    if (this.searching) parts.push(`搜索：${this.search.trim()}`);
+    const parts = [`可用 ${this.rows.length}`, `已启用 ${this.queue.length}`];
+    if (this.dirty) parts.push("未保存");
+    if (this.hidden.length > 0) parts.push(`已保留 ${this.hidden.length} 个当前不可用配置`);
     return parts.join(" · ");
+  }
+
+  /** 把光标移到指定模型所在行；找不到时退回最近合法行。 */
+  private focusKey(key: string): void {
+    const index = this.visibleRows.findIndex((row) => row.key === key);
+    if (index >= 0) this.cursor = index;
+    this.clampCursor();
   }
 
   private clampCursor(): void {
@@ -630,64 +688,379 @@ export function applyPoolEditorKey(
 // 4. 界面组件（结构化接口，不导入 pi-tui）
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 主题只用到 fg 可选能力；缺失时退化为纯文本。 */
+/**
+ * 主题能力：只用到 fg/bg 两个可选函数；缺失或颜色名无效时退化为纯文本。
+ * 颜色名沿用宿主主题 token（accent/dim/borderAccent/selectedBg/error/warning/…），
+ * 不硬编码 RGB 或 ANSI，保证主题切换与低色彩终端都能正常阅读。
+ */
 export type PoolThemeLike = {
   fg?: (color: string, text: string) => string;
+  bg?: (color: string, text: string) => string;
 };
 
-/** 去掉 ANSI 转义后计算显示宽度（本组件的文本基本无 ANSI，容错即可）。 */
-function displayWidth(text: string): number {
-  return text.replace(/\x1b\[[0-9;]*m/g, "").length;
+/** 常见 ANSI 控制序列：SGR 颜色、光标控制、OSC（超链接/标题）等，宽度一律按 0 列计。 */
+const POOL_ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+
+/** 组合记号、变体选择符、ZWJ、肤色修饰等零宽字符（占 0 列）。 */
+function isZeroWidth(code: number): boolean {
+  return (
+    (code >= 0x0300 && code <= 0x036f) || // 拉丁组合记号
+    (code >= 0x0483 && code <= 0x0489) ||
+    (code >= 0x0591 && code <= 0x05bd) ||
+    (code >= 0x0610 && code <= 0x061a) ||
+    (code >= 0x064b && code <= 0x065f) ||
+    code === 0x0670 ||
+    (code >= 0x06d6 && code <= 0x06dc) ||
+    (code >= 0x0e31 && code <= 0x0e3a) ||
+    (code >= 0x0e47 && code <= 0x0e4e) ||
+    (code >= 0x200b && code <= 0x200f) || // 零宽空格 / 连接符 / 方向标记
+    (code >= 0x2060 && code <= 0x2064) ||
+    code === 0xfeff ||
+    (code >= 0xfe00 && code <= 0xfe0f) || // 变体选择符
+    (code >= 0xfe20 && code <= 0xfe2f) ||
+    (code >= 0x1f3fb && code <= 0x1f3ff) || // emoji 肤色修饰
+    (code >= 0xe0100 && code <= 0xe01ef) // 变体选择符补充区
+  );
 }
 
-/** 按显示宽度截断（超出加省略号）。 */
+/** 东亚宽字符与 emoji（占 2 列）；表按 Unicode East Asian Width 的常用区间整理。 */
+function isWideChar(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) || // 韩文字母
+    code === 0x2329 ||
+    code === 0x232a ||
+    (code >= 0x2e80 && code <= 0x303e) || // CJK 部首与标点
+    (code >= 0x3041 && code <= 0x33ff) || // 假名、注音、CJK 兼容
+    (code >= 0x3400 && code <= 0x4dbf) || // CJK 扩展 A
+    (code >= 0x4e00 && code <= 0x9fff) || // CJK 基本区
+    (code >= 0xa000 && code <= 0xa4cf) || // 彝文
+    (code >= 0xa960 && code <= 0xa97f) ||
+    (code >= 0xac00 && code <= 0xd7a3) || // 韩文音节
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) || // 全角字符
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1f64f) || // emoji 符号与表情
+    (code >= 0x1f680 && code <= 0x1f6ff) ||
+    (code >= 0x1f900 && code <= 0x1f9ff) ||
+    (code >= 0x1fa70 && code <= 0x1faff) ||
+    (code >= 0x17000 && code <= 0x18aff) || // 西夏文等
+    (code >= 0x20000 && code <= 0x3fffd) // CJK 扩展 B 及以上
+  );
+}
+
+/** 单个码点的显示宽度。 */
+function charDisplayWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0;
+  if (isZeroWidth(code)) return 0;
+  return isWideChar(code) ? 2 : 1;
+}
+
+/**
+ * 计算显示宽度：忽略 ANSI 控制序列，中文/emoji 记 2 列，组合记号记 0 列。
+ * 与 pi-tui 的 visibleWidth 语义一致，避免用 String.length 误判对齐与截断位置。
+ */
+export function displayWidth(text: string): number {
+  const plain = text.replace(POOL_ANSI_RE, "");
+  let width = 0;
+  for (const char of plain) width += charDisplayWidth(char);
+  return width;
+}
+
+type DisplayToken = { value: string; width: number };
+
+/** 拆分普通文本：按码点遍历，正确处理代理对（emoji）与零宽字符。 */
+function pushPlainTokens(tokens: DisplayToken[], text: string): void {
+  for (const char of text) tokens.push({ value: char, width: charDisplayWidth(char) });
+}
+
+/** 把文本切成「ANSI 序列」与「单个码点」两种 token，便于按列宽截断而不破坏颜色与宽字符。 */
+function tokenizeDisplayText(text: string): DisplayToken[] {
+  const tokens: DisplayToken[] = [];
+  // 全局正则有 lastIndex 状态，这里每次新建实例，保证函数可重入。
+  const pattern = new RegExp(POOL_ANSI_RE.source, "g");
+  let index = 0;
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    if (match.index > index) pushPlainTokens(tokens, text.slice(index, match.index));
+    tokens.push({ value: match[0], width: 0 });
+    index = match.index + match[0].length;
+  }
+  if (index < text.length) pushPlainTokens(tokens, text.slice(index));
+  return tokens;
+}
+
+/** 按显示宽度截断（超出加省略号），保留已有 ANSI 颜色序列且不切断宽字符/代理对。 */
 export function truncatePoolLine(text: string, width: number): string {
   if (width <= 0) return "";
   if (displayWidth(text) <= width) return text;
   if (width === 1) return "…";
-  return `${text.slice(0, Math.max(0, width - 1))}…`;
+  const budget = width - 1; // 给省略号留一列
+  let output = "";
+  let used = 0;
+  for (const token of tokenizeDisplayText(text)) {
+    if (used + token.width > budget) break;
+    output += token.value;
+    used += token.width;
+  }
+  return `${output}…`;
 }
 
-/** 生成界面文本行（纯文本，便于测试；主题着色在组件层叠加）。 */
-export function renderPoolLines(editor: PoolEditor, width: number, pageSize = 12): string[] {
-  const visible = editor.visibleRows;
-  const lines: string[] = [];
-  lines.push(truncatePoolLine("压缩模型顺位池 /acp-models", width));
-  lines.push(truncatePoolLine(editor.statusLine(), width));
+/** 右侧补空格到指定显示宽度（用于边框与列对齐）。 */
+function padDisplayEnd(text: string, width: number): string {
+  const missing = width - displayWidth(text);
+  return missing > 0 ? `${text}${" ".repeat(missing)}` : text;
+}
 
-  if (visible.length === 0) {
-    lines.push("（没有匹配的模型：清空搜索或检查注册表）");
-  } else {
-    // 滚动窗口：让光标始终可见。
-    const size = Math.max(3, pageSize);
-    const start = Math.max(0, Math.min(editor.cursor - Math.floor(size / 2), visible.length - size));
-    const end = Math.min(visible.length, start + size);
-    if (start > 0) lines.push(`  ↑ 还有 ${start} 项`);
-    for (let index = start; index < end; index += 1) {
-      const row = visible[index];
-      const isCursor = index === editor.cursor;
-      const isSelected = editor.moving && editor.selectedKey === row.key;
-      const queueIndex = editor.queueIndexOf(row);
-      const order = queueIndex === null ? "  " : `${String(queueIndex + 1).padStart(2, " ")}`;
-      const flags = [
-        row.enabled ? "●" : "○",
-        row.registered ? (row.available ? "✓" : "×") : "?",
-      ].join("");
-      const marker = isCursor ? ">" : " ";
-      const selected = isSelected ? "◆" : " ";
-      lines.push(truncatePoolLine(`${marker}${selected}${order} ${flags} ${row.label}`, width));
+/** 应用主题前景色；主题缺失或颜色名无效时返回原文。 */
+function paintFg(theme: PoolThemeLike | undefined, color: string, text: string): string {
+  const fg = theme?.fg;
+  if (!fg || !text) return text;
+  try {
+    return fg(color, text);
+  } catch {
+    return text;
+  }
+}
+
+/** 应用主题背景色（如光标行高亮）；主题不支持 bg 时返回原文。 */
+function paintBg(theme: PoolThemeLike | undefined, color: string, text: string): string {
+  const bg = theme?.bg;
+  if (!bg || !text) return text;
+  try {
+    return bg(color, text);
+  } catch {
+    return text;
+  }
+}
+
+/** 把键位提示片段按可用宽度贪婪折行（片段之间用 · 连接）。 */
+export function packHintSegments(segments: readonly string[], width: number): string[] {
+  if (width <= 0) return [];
+  const lines: string[] = [];
+  let current = "";
+  for (const segment of segments) {
+    const piece = truncatePoolLine(segment, width);
+    if (current && displayWidth(`${current} · ${piece}`) > width) {
+      lines.push(current);
+      current = piece;
+    } else {
+      current = current ? `${current} · ${piece}` : piece;
     }
-    if (end < visible.length) lines.push(`  ↓ 还有 ${visible.length - end} 项`);
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+/** 渲染期状态：保存中与保存失败提示。 */
+export type PoolRenderState = {
+  saving?: boolean;
+  error?: string | null;
+};
+
+/** 渲染选项：主题、终端高度、列表上限与保存状态。 */
+export type PoolRenderOptions = {
+  theme?: PoolThemeLike;
+  /** 终端可用高度（行数），用于给列表留空间；标题/提示/反馈行优先保留。 */
+  height?: number;
+  /** 列表最多显示的模型行数（默认 12）。 */
+  maxListRows?: number;
+  state?: PoolRenderState;
+};
+
+/** 常规界面至少需要的宽高；低于此值退化为「请放大窗口」提示。 */
+const MIN_POOL_WIDTH = 24;
+const MIN_POOL_HEIGHT = 8;
+const MAX_LIST_ROWS = 12;
+
+/** 按当前模式（排序 / 搜索 / 浏览）给出键位提示片段。 */
+function hintSegments(editor: PoolEditor): string[] {
+  if (editor.moving) {
+    return ["↑/↓ 调整顺位（仅压缩池内）", "空格 取消选中", "回车 切换当前项", "Ctrl+S 保存", "Esc 放弃"];
+  }
+  if (editor.searching) {
+    return ["↑/↓ 移动光标", "退格 删除搜索", "Ctrl+U 清空搜索", "回车 启用/停用", "Ctrl+S 保存", "Esc 放弃"];
+  }
+  return ["空格 选中并排序", "回车 启用/停用", "输入文字搜索", "Ctrl+S 保存", "Esc 放弃"];
+}
+
+/** 分区标题：`── 压缩池顺位（3）────`，弱化色，不是模型行。 */
+function sectionHeader(theme: PoolThemeLike | undefined, text: string, width: number): string {
+  const label = `── ${text} `;
+  const dashes = Math.max(0, width - displayWidth(label));
+  return paintFg(theme, "borderMuted", truncatePoolLine(`${label}${"─".repeat(dashes)}`, width));
+}
+
+/** 单个模型行：光标标记 >、排序标记 ◆、顺位编号、启用标记 ●/○、模型名与 provider 分列。 */
+function renderPoolRow(
+  editor: PoolEditor,
+  row: PoolRow,
+  isCursor: boolean,
+  width: number,
+  theme: PoolThemeLike | undefined,
+): string {
+  const queueIndex = editor.queueIndexOf(row);
+  const order = queueIndex === null ? "  " : String(queueIndex + 1).padStart(2, " ");
+  const marker = paintFg(theme, "accent", isCursor ? ">" : " ");
+  const selected = paintFg(theme, "accent", editor.moving && editor.selectedKey === row.key ? "◆" : " ");
+  // 顺位编号用强调色（未启用行没有顺位，保留空白占位）。
+  const orderText = queueIndex === null ? order : paintFg(theme, "accent", order);
+  const flag = paintFg(theme, row.enabled ? "success" : "dim", row.enabled ? "●" : "○");
+  const prefix = `${marker}${selected}${orderText} ${flag} `;
+
+  const providerText = `[${row.provider}]`;
+  const labelWidth = width - displayWidth(prefix);
+  let body: string;
+  if (labelWidth >= 16) {
+    // 宽布局：模型名与 provider 分列；名字列封顶 30 列，避免 provider 被挤到屏幕最右侧。
+    const nameBudget = Math.min(30, Math.max(6, labelWidth - displayWidth(providerText) - 1));
+    body = `${padDisplayEnd(truncatePoolLine(row.modelId, nameBudget), nameBudget)} ${providerText}`;
+  } else {
+    // 紧凑布局：空间不足时退化为 `模型名 [provider]` 的整体截断。
+    body = truncatePoolLine(row.label, Math.max(0, labelWidth));
   }
 
-  lines.push("");
-  const hints = editor.moving
-    ? "↑/↓ 调整顺位（仅队列内） · 空格 取消选中 · 回车 切换当前项 · Ctrl+S 保存 · Esc 放弃"
-    : editor.searching
-      ? "↑/↓ 移动光标 · 退格 删除搜索 · Ctrl+U 清空搜索（搜索中禁止排序） · Esc 放弃"
-      : "空格 选中并进入排序 · 回车 启用/停用 · 输入文字搜索 · Ctrl+S 保存 · Esc 放弃";
-  lines.push(truncatePoolLine(hints, width));
-  lines.push(truncatePoolLine("图例：● 启用 ○ 停用 · ✓ 可用 × 无认证 ? 注册表中缺失 · 数字=队列顺位", width));
+  let line = truncatePoolLine(`${prefix}${body}`, width);
+  // 光标行用主题背景高亮，同时保留行首 `>`，不只靠颜色定位。
+  if (isCursor) line = paintBg(theme, "selectedBg", line);
+  return line;
+}
+
+/**
+ * 生成列表区（分区标题 + 模型行 + 滚动提示）：
+ *   - 分区标题不是模型行，不参与光标索引；
+ *   - 滚动窗口顶部已落在某分区内部时重新给出该分区标题，避免归属歧义；
+ *   - 搜索时保留分区与实际队列编号。
+ */
+function renderPoolList(
+  editor: PoolEditor,
+  contentWidth: number,
+  size: number,
+  theme: PoolThemeLike | undefined,
+): string[] {
+  const visible = editor.visibleRows;
+  if (visible.length === 0) {
+    // 两种空状态分开：搜索无匹配 vs 根本没有可用模型。
+    const empty = editor.searching
+      ? `未找到匹配「${editor.search.trim()}」的可用模型`
+      : "没有已配置认证的模型：请先在 /settings 中配置 provider 认证";
+    return [paintFg(theme, "dim", truncatePoolLine(empty, contentWidth))];
+  }
+
+  const poolCount = visible.filter((row) => row.enabled).length;
+  const windowSize = Math.max(1, Math.min(size, visible.length));
+  const start = Math.max(0, Math.min(editor.cursor - Math.floor(windowSize / 2), visible.length - windowSize));
+  const end = Math.min(visible.length, start + windowSize);
+
+  const lines: string[] = [];
+  if (start > 0) lines.push(paintFg(theme, "dim", truncatePoolLine(`  ↑ 还有 ${start} 项`, contentWidth)));
+  if (poolCount > 0 && start < poolCount) {
+    lines.push(sectionHeader(theme, `压缩池顺位（${poolCount}）`, contentWidth));
+  }
+  if (end > poolCount) {
+    lines.push(sectionHeader(theme, `其他可用模型（${visible.length - poolCount}）`, contentWidth));
+  }
+  for (let index = start; index < end; index += 1) {
+    lines.push(renderPoolRow(editor, visible[index], index === editor.cursor, contentWidth, theme));
+  }
+  if (end < visible.length) {
+    lines.push(paintFg(theme, "dim", truncatePoolLine(`  ↓ 还有 ${visible.length - end} 项`, contentWidth)));
+  }
+  return lines;
+}
+
+/** 顶边框：╭─ 压缩模型池 ──── /acp-models ─╮，窄终端自动省略副标题。 */
+function topBorder(width: number, theme: PoolThemeLike | undefined): string {
+  const title = " 压缩模型池 ";
+  const subtitle = " /acp-models ─";
+  const useSubtitle = width >= 56;
+  const fixed = 2 + displayWidth(title) + (useSubtitle ? displayWidth(subtitle) : 0) + 1;
+  const dashes = "─".repeat(Math.max(0, width - fixed));
+  return (
+    paintFg(theme, "borderAccent", "╭─") +
+    paintFg(theme, "accent", title) +
+    paintFg(theme, "borderAccent", `${dashes}${useSubtitle ? subtitle : ""}╮`)
+  );
+}
+
+/** 底边框：╰────╯。 */
+function bottomBorder(width: number, theme: PoolThemeLike | undefined): string {
+  return paintFg(theme, "borderAccent", `╰${"─".repeat(Math.max(0, width - 2))}╯`);
+}
+
+/** 包一层左右边框并把内容补齐到固定列宽，保证每一行不超宽、右边框对齐。 */
+function borderLine(
+  text: string,
+  contentWidth: number,
+  theme: PoolThemeLike | undefined,
+): string {
+  const edge = paintFg(theme, "borderAccent", "│");
+  return `${edge} ${padDisplayEnd(text, contentWidth)} ${edge}`;
+}
+
+/**
+ * 生成 /acp-models 的单面板界面行：
+ *   外边框与标题 → 状态栏 → 固定搜索栏 → 分区列表 → 反馈区 → 键位提示。
+ * 不传 theme 时返回纯文本（便于测试）；传入 theme 时使用宿主主题色。
+ * 保证每一行显示宽度不超过 width；高度不足时优先保留标题、提示与反馈，压缩列表。
+ */
+export function renderPoolLines(
+  editor: PoolEditor,
+  width: number,
+  options: PoolRenderOptions = {},
+): string[] {
+  const safeWidth = Math.max(0, Math.floor(width));
+  const heightGiven = options.height !== undefined;
+  const height = Math.max(1, Math.floor(options.height ?? 24));
+  const theme = options.theme;
+
+  // 极小终端：只给一句可操作的提示，Esc 仍可退出。
+  if (safeWidth < MIN_POOL_WIDTH || (heightGiven && height < MIN_POOL_HEIGHT)) {
+    return [truncatePoolLine("窗口过小：请放大终端后继续（Esc 退出）", safeWidth)];
+  }
+
+  const inner = safeWidth - 2; // 边框内宽度（│…│）
+  const content = Math.max(1, inner - 2); // 左右各留一列内边距
+
+  // 固定区：状态栏 + 固定搜索栏（空搜索时显示操作提示）。
+  const statusLine = paintFg(theme, "muted", truncatePoolLine(editor.statusLine(), content));
+  const searchLine = editor.searching
+    ? paintFg(theme, "text", truncatePoolLine(`搜索：${editor.search.trim()}`, content))
+    : paintFg(theme, "dim", truncatePoolLine("输入文字搜索模型名或 provider", content));
+
+  // 反馈区：保存中 > 保存失败 > 排序提示 > 操作提示；空则不占行。
+  const state: PoolRenderState = options.state ?? {};
+  let feedback: string | null = null;
+  if (state.saving) {
+    feedback = paintFg(theme, "accent", "保存中…");
+  } else if (state.error) {
+    feedback = paintFg(theme, "error", truncatePoolLine(`保存失败：${state.error}`, content));
+  } else if (editor.moving && editor.selectedKey) {
+    feedback = paintFg(
+      theme,
+      "accent",
+      truncatePoolLine(`排序中：${editor.selectedKey}（↑/↓ 调整顺位）`, content),
+    );
+  } else if (editor.notice) {
+    feedback = paintFg(theme, "warning", truncatePoolLine(editor.notice, content));
+  }
+
+  const hints = packHintSegments(hintSegments(editor), content).map((line) => paintFg(theme, "dim", line));
+  const chrome = 2 /* 上下边框 */ + 1 /* 状态栏 */ + 1 /* 搜索栏 */ + (feedback ? 1 : 0) + hints.length;
+  const maxListRows = Math.max(1, Math.min(options.maxListRows ?? MAX_LIST_ROWS, MAX_LIST_ROWS));
+  // 预留两行给可能出现的两个分区标题/滚动提示，再逐步收紧直到总行数不超高度。
+  const listSpace = Math.max(1, Math.min(maxListRows, height - chrome - 2));
+  let listLines: string[] = [];
+  for (let size = listSpace; size >= 1; size -= 1) {
+    listLines = renderPoolList(editor, content, size, theme);
+    if (chrome + listLines.length <= height) break;
+  }
+
+  const lines: string[] = [topBorder(safeWidth, theme), borderLine(statusLine, content, theme), borderLine(searchLine, content, theme)];
+  for (const line of listLines) lines.push(borderLine(line, content, theme));
+  if (feedback) lines.push(borderLine(feedback, content, theme));
+  for (const line of hints) lines.push(borderLine(line, content, theme));
+  lines.push(bottomBorder(safeWidth, theme));
   return lines;
 }
 
@@ -699,37 +1072,70 @@ export type PoolComponentLike = {
 };
 
 /**
- * 创建 /acp-models 的交互组件。
- * onDone("save") 表示保存并关闭，onDone("cancel") 表示放弃修改。
+ * 创建 /acp-models 的交互组件：保存改在界面内异步执行。
+ *   - 保存中：忽略一切输入（含 Esc），避免「用户取消」与「已经写入成功」产生歧义；
+ *   - 保存失败：留在原界面、保留搜索/光标/草稿，显示简短原因并允许重试或 Esc 放弃；
+ *   - onDone 只在原子写入成功或用户主动放弃时触发。
  */
 export function createPoolEditorComponent(options: {
   editor: PoolEditor;
   theme?: PoolThemeLike;
   requestRender: () => void;
+  /** 原子写入配置：返回 null 表示成功，返回字符串表示失败原因（简短、已脱敏）。 */
+  onSave: () => Promise<string | null>;
   onDone: (result: "save" | "cancel") => void;
-  pageSize?: number;
+  /** 终端可用高度提供者；交互宿主通常传 () => tui.terminal.rows。 */
+  height?: () => number;
+  maxListRows?: number;
 }): PoolComponentLike {
   const { editor, requestRender, onDone } = options;
-  return {
-    render(width: number): string[] {
-      const lines = renderPoolLines(editor, width, options.pageSize);
-      const fg = options.theme?.fg;
-      if (typeof fg !== "function") return lines;
-      try {
-        // 只给标题与提示行着色；失败（未知颜色名）时退化为纯文本。
-        return lines.map((line, index) =>
-          index === 0 ? fg("accent", line) : index >= lines.length - 2 ? fg("dim", line) : line,
-        );
-      } catch {
-        return lines;
-      }
-    },
-    handleInput(data: string): void {
-      const outcome = applyPoolEditorKey(editor, data);
-      if (outcome.finish) {
-        onDone(outcome.finish);
+  let saving = false;
+  let error: string | null = null;
+
+  /** 执行一次保存；成功才 onDone，失败留在界面并允许重试。 */
+  async function save(): Promise<void> {
+    if (saving) return; // 禁止重复保存
+    saving = true;
+    error = null;
+    requestRender();
+    try {
+      const failure = await options.onSave();
+      if (failure) {
+        saving = false;
+        error = failure;
+        requestRender();
         return;
       }
+    } catch (cause) {
+      saving = false;
+      error = cause instanceof Error ? cause.message : String(cause);
+      requestRender();
+      return;
+    }
+    onDone("save"); // 原子替换成功后才关闭界面
+  }
+
+  return {
+    render(width: number): string[] {
+      return renderPoolLines(editor, width, {
+        theme: options.theme,
+        height: options.height?.(),
+        maxListRows: options.maxListRows,
+        state: { saving, error },
+      });
+    },
+    handleInput(data: string): void {
+      if (saving) return; // 原子写入期间暂不响应编辑与关闭
+      const outcome = applyPoolEditorKey(editor, data);
+      if (outcome.finish === "save") {
+        void save();
+        return;
+      }
+      if (outcome.finish === "cancel") {
+        onDone("cancel");
+        return;
+      }
+      error = null; // 新的输入 → 清除上一次的失败提示
       if (data === "\x15") {
         // Ctrl+U：清空搜索
         if (editor.clearSearch()) requestRender();
@@ -738,7 +1144,7 @@ export function createPoolEditorComponent(options: {
       if (outcome.changed) requestRender();
     },
     invalidate(): void {
-      // 无缓存渲染状态，无需处理。
+      // 无缓存渲染状态：主题变化时下一次 render 会重新取色。
     },
   };
 }

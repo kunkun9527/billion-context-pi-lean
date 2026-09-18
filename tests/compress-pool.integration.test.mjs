@@ -463,32 +463,54 @@ test("accepts the JSON-encoded content form from non-strict providers", async ()
 
 // ── /acp-models 命令 ────────────────────────────────────────────────────
 
-function commandCtx({ keys, onCustom }) {
+function commandCtx({ keys, onCustom, models, hasAuth, onRendered }) {
   const notifications = [];
+  const poolModels = models ?? [model("pool", "summarizer"), model("main", "main-model")];
   const ctx = {
     ui: {
       notify(message, type) {
         notifications.push([message, type]);
       },
       custom(factory) {
-        onCustom?.();
         return new Promise((resolve) => {
           const done = (result) => resolve(result);
           const component = factory({ requestRender() {} }, {}, {}, done);
-          for (const key of keys) component.handleInput(key);
+          // 逐个投递按键，并在每个按键后让出事件循环，
+          // 这样界面内的异步保存（失败/成功）才有机会真正执行。
+          // 按键可以是字符串，也可以是 { key, when }：先等到 when 成立再投递，
+          // 用于验证「写入失败后仍停在界面、用户随后按 Esc 才关闭」。
+          void (async () => {
+            await onCustom?.(component);
+            onRendered?.(component.render(100));
+            for (const entry of keys) {
+              const spec = typeof entry === "string" ? { key: entry } : entry;
+              if (spec.when) await spec.when(component);
+              component.handleInput(spec.key);
+              await new Promise((next) => setTimeout(next, 0));
+            }
+          })();
         });
       },
     },
     modelRegistry: {
-      getAll: () => [model("pool", "summarizer"), model("main", "main-model")],
-      find: (provider, modelId) => [model("pool", "summarizer"), model("main", "main-model")]
-        .find((m) => m.provider === provider && m.id === modelId),
-      hasConfiguredAuth: () => true,
+      getAll: () => poolModels,
+      find: (provider, modelId) => poolModels.find((m) => m.provider === provider && m.id === modelId),
+      hasConfiguredAuth: (m) => (hasAuth ? hasAuth(m) : true),
       complete: async () => assistantText("x"),
     },
     sessionManager: { getSessionId: () => "s1", getSessionFile: () => undefined },
   };
   return { ctx, notifications };
+}
+
+/** 轮询界面渲染结果，直到出现指定文案（用于等待异步保存真正结束）。 */
+async function waitForRender(component, needle, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (component.render(100).some((line) => line.includes(needle))) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`等待界面出现「${needle}」超时`);
 }
 
 test("/acp-models saves the ranked queue on Ctrl+S", async () => {
@@ -526,6 +548,65 @@ test("/acp-models refuses to open (and never overwrites) a corrupt config", asyn
     assert.equal(customCalls, 0);
     assert.equal(await fs.readFile(path.join(dir, "compress-models.json"), "utf8"), "{ broken");
     assert.ok(notifications.some(([, type]) => type === "error"));
+  });
+});
+
+test("/acp-models lists only authenticated models and keeps hidden saved entries", async () => {
+  await withAgentDir("cmd-filter", async (dir) => {
+    // 已保存的 ghost/gone 当前未配置认证，必须在界面上隐藏但保留在配置里
+    await writeConfig(dir, [
+      { provider: "ghost", modelId: "gone" },
+      { provider: "pool", modelId: "summarizer" },
+    ]);
+    const renders = [];
+    const { ctx } = commandCtx({
+      keys: ["\x1b"],
+      models: [model("ghost", "gone"), model("pool", "summarizer"), model("main", "main-model")],
+      hasAuth: (m) => m.provider !== "ghost",
+      onRendered: (lines) => renders.push(lines),
+    });
+    const pi = createPi();
+    createLeanAcpExtension(fakeUpstream({ upstreamCalls: [], contextMessages }))(pi);
+    await pi.commands.get("acp-models").handler("", ctx);
+
+    const screen = renders.at(-1).join("\n");
+    assert.match(screen, /summarizer\s+\[pool\]/, screen);
+    assert.ok(!screen.includes("ghost/gone")); // 不可用模型不生成列表行
+    assert.ok(!/[✓×]/.test(screen)); // 不再出现可用性标记
+    assert.ok(screen.includes("已保留 1 个当前不可用配置"));
+  });
+});
+
+test("/acp-models keeps the panel open after a failed write and lands the draft on the next run", async () => {
+  await withAgentDir("cmd-save-fail", async (dir) => {
+    const file = path.join(dir, "compress-models.json");
+    await writeConfig(dir, [{ provider: "pool", modelId: "summarizer" }]);
+    const { ctx, notifications } = commandCtx({
+      keys: [
+        "\r",
+        "\x13",
+        // 写失败时界面必须停在原处：等到「保存失败」出现后再按 Esc 放弃
+        { key: "\x1b", when: (component) => waitForRender(component, "保存失败") },
+      ],
+      // 界面打开后（配置已读取）把目标位置换成同名目录，让原子替换必然失败
+      onCustom: async () => {
+        await fs.rm(file, { force: true });
+        await fs.mkdir(file, { recursive: true });
+      },
+    });
+    const pi = createPi();
+    createLeanAcpExtension(fakeUpstream({ upstreamCalls: [], contextMessages }))(pi);
+    await pi.commands.get("acp-models").handler("", ctx);
+    assert.ok((await fs.stat(file)).isDirectory()); // 目录未被覆盖
+    assert.ok(!notifications.some(([message]) => /已保存/.test(message))); // 不谎报成功
+    assert.ok(notifications.some(([message]) => /已放弃本次修改/.test(message)), JSON.stringify(notifications)); // Esc 后才关闭
+
+    // 失败时保留的草稿会在下一次打开时恢复（不写入、不重排原配置）
+    await fs.rmdir(file);
+    const second = commandCtx({ keys: ["\x1b"] });
+    await pi.commands.get("acp-models").handler("", second.ctx);
+    assert.ok(second.notifications.some(([message]) => /已恢复上次未保存的草稿/.test(message)));
+    await assert.rejects(fs.stat(file));
   });
 });
 
