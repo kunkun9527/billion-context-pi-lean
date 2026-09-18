@@ -72,7 +72,9 @@ acp_context
 
 想再压，按上游[微调压缩提示词教程](https://github.com/ranxianglei/billion-context-pi/blob/master/CONFIGURATION.zh-CN.md)来：第一层就是上面的包，第二层覆盖单个段（`promptSections` / `nudgeSections` / `toolPrompts`），第三层替换核心压缩规则（`prompts.*` 加 `acknowledgePromptsRisk: true`）——也可以直接让 agent 帮你压缩。
 
-示例：前沿模型用的 `howToCompress` 覆盖（约 150 token，上游 lean 包里约 500——长版是故意留的，用来压住弱模型的压缩幻觉）：
+示例：为什么 lean 包还是这么长——作者故意保留了详细的 `howToCompress`
+规则，弱模型靠它才不会压缩出幻觉。如果你用的是前沿模型，还想再压，
+只覆盖这一段就行（约 150 token，包里约 500）：
 
 ```json
 {

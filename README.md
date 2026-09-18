@@ -82,9 +82,10 @@ level 1 is the pack above, level 2 overrides single sections
 core compression rules (`prompts.*` plus `acknowledgePromptsRisk: true`) —
 or just ask your agent to compress them for you.
 
-Example: a frontier-model `howToCompress` override (≈150 tokens vs ≈500 in
-the lean pack, which keeps the long version against hallucinations in weaker
-models):
+Example: why the lean pack is still long — the author deliberately kept the
+detailed `howToCompress` rules, which weaker models need to avoid
+compression hallucinations. If you run frontier models and want to compress
+further, override just that section (≈150 tokens vs ≈500 in the pack):
 
 ```json
 {
