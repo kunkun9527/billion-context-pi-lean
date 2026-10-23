@@ -1,6 +1,6 @@
 {
 	"name": "billion-context-pi-lean",
-	"version": "0.2.2",
+	"version": "0.2.3",
 	"description": "Lean fork of billion-context-pi for Pi: long-session context compression with an optional cheap summary model — 486 initialization tokens, 94% fewer than the original.",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

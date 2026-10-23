@@ -25,8 +25,6 @@ test("applyPanelValue: idle settings, per-model compress keys, inherit prunes", 
   applyPanelValue(raw, "maxContextLimit", "inherit", scope);
   assert.equal(raw.compress, undefined, "empty provider/model objects are pruned");
 
-  applyPanelValue(raw, "toolOutputMaxBytes", "off", scope);
-  assert.equal(raw.toolOutputMaxBytes, 0);
   applyPanelValue(raw, "compressionModelId", "main model", scope);
   assert.equal("compressionModelId" in raw, false);
 });
@@ -44,7 +42,6 @@ test("readPanelValue shows effective values and defaults", () => {
   assert.equal(readPanelValue(adapter, "nudgeGrowthTokens", scope), "100K");
   assert.equal(readPanelValue(adapter, "maxContextLimit", scope), "45%");
   assert.equal(readPanelValue(adapter, "minPressureBenefitTokens", scope), "inherit");
-  assert.equal(readPanelValue(adapter, "toolOutputMaxBytes", scope), "50K");
   assert.equal(readPanelValue(adapter, "compressionModelId", scope), "main model");
 });
 

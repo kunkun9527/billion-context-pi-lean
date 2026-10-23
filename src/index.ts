@@ -36,7 +36,7 @@ import { makeConfigCommand } from "./config-panel.js";
 import { debug, logError, logInfo, logWarn, logThrow, closeLogStream } from "./log.js";
 import { collectCoveredMessageIds, estimateTokens, collectImageTokens, modelSupportsImages, sentViewTokenCount, sentViewMeterMatches, adoptedViewTokens, blockSignature, historyCanary } from "./tokens.js";
 import { lastTurnBoundaryId, lastTurnBoundaryIndex } from "./turn-boundary.js";
-import { compressionAnchorStaleness } from "./floor-stale.js";
+import { compressionAnchorStaleness, measuredHostTokens } from "./floor-stale.js";
 import {
   THROTTLE_RETRY_ERROR_MESSAGE,
   THROTTLE_KICK_TEXT,
@@ -355,7 +355,9 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       // the skip dropped the meter onto the undercounting estimate (~70-80K low)
       // and the next fresh reading snapped it back into the emergency band.
       const { predates, netReclaimed } = compressionAnchorStaleness(entries, state.blocks, defaultCountTokens);
-      const realPromptTokens = realUsage?.tokens ?? 0;
+      // Only a provider measurement may floor/calibrate: after a failed request
+      // (pi omits it via context_edit) pi re-estimates the raw, unfolded history.
+      const realPromptTokens = measuredHostTokens(realUsage, entries);
       const hostFloor = realPromptTokens > 0 ? Math.max(0, realPromptTokens - (predates ? netReclaimed : 0)) : 0;
       // Calibration anchor (issue #455): the estimate carries systematic phantom
       // mass (content counted locally that never goes on the wire) which the
@@ -538,6 +540,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
         // keeps the pre-existing [turn] layout stable for log consumers.
         hostTokens: realUsage?.tokens ?? null,
         hostPct: realUsage?.percent ?? null,
+        ...(realUsage?.tokens && realPromptTokens === 0 ? { hostIgnored: "estimate" } : {}),
       });
       debug.event("processTurn", {
         modelId,

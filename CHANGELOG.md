@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.3 (2026-10-23)
+
+- fix: no more false EMERGENCY after a failed request. Pi's auto-retry omits the failed attempt with a `context_edit`; Pi then stops trusting the last provider usage and `getContextUsage()` re-estimates its whole projection, which is the raw, unfolded history (641,881 tokens against a 54K sent view in one session). ACP used that number as a floor, so the meter showed 120–170% until the next successful reply. Host usage now floors, calibrates and feeds the overflow guard (context transform, `/acp` panel, `acp_status`) only when it is anchored on a valid assistant usage with no `context_edit` after it; otherwise ACP uses its sent-view estimate. The turn log marks such turns with `hostIgnored=estimate`.
+- fix: ACP applies Pi `context_edit` entries when it rebuilds the request. `buildContextEntries()` returns the raw path, so attempts Pi had omitted (and content Pi had replaced) were sent again. Edits now follow Pi's `buildSessionProjection` semantics (`null` omits the entry, otherwise only its content is replaced); the incremental projection cache re-projects when a new edit arrives. `/acp export` uses the same edited view.
+- Removed the bash default timeout injection (`toolBashDefaultTimeout`) and the tool output cap (`toolOutputMaxBytes`), together with their `/acp-config` panel items. Neither is context management: timeouts belong to the bash tool or a bash extension, and Pi already caps bash/read/grep output (2000 lines / 50KB, full output saved to a file), so the extra cap mostly cut off Pi's own truncation notice. Stale keys in `acp.json` are dropped silently. The timeout notice on a bash result that Pi reports as timed out, and the repetition guard, stay. Ported from SeniorHan/keel-fold `3189c29` and `8719091`.
+
 ## v0.2.2 (2026-10-20)
 
 - Lean facade repairs malformed model arguments before validation (`prepareArguments`, no extra tokens): `acp_context` accepts JSON-string `args`, top-level op fields and an omitted `op` (inferred only from unambiguous fields); `compress` accepts a JSON-string `content`, JSON-string entries inside `content`, and a range array placed in `summary` without `content`. Explicit and invalid ops are left for validation.

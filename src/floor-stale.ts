@@ -34,6 +34,7 @@ function validAnchorUsage(u: UsageLike): boolean {
 
 interface AnchorScan {
   lastUsageIdx: number;
+  lastEditIdx: number;
   lastCompressIdx: number;
   compressIdxByCallId: Map<string, number>;
 }
@@ -41,8 +42,10 @@ interface AnchorScan {
 function scanEntries(entries: AnchorEntry[]): AnchorScan {
   let lastUsageIdx = -1;
   let lastCompressIdx = -1;
+  let lastEditIdx = -1;
   const compressIdxByCallId = new Map<string, number>();
   for (let i = 0; i < entries.length; i++) {
+    if (entries[i]!.type === "context_edit") lastEditIdx = i;
     const m = entries[i]!.message;
     if (!m) continue;
     if (m.role === "assistant" && m.stopReason !== "aborted" && m.stopReason !== "error" && validAnchorUsage(m.usage)) {
@@ -58,7 +61,30 @@ function scanEntries(entries: AnchorEntry[]): AnchorScan {
       compressIdxByCallId.set(m.toolCallId, i);
     }
   }
-  return { lastUsageIdx, lastCompressIdx, compressIdxByCallId };
+  return { lastUsageIdx, lastEditIdx, lastCompressIdx, compressIdxByCallId };
+}
+
+/** pi's getContextUsage() is only a provider measurement while it is anchored on
+ *  a valid assistant usage. With no anchor, or a `context_edit` after it (pi's
+ *  auto-retry appends one to omit every failed attempt), pi's
+ *  estimateProjectedContextTokens distrusts the usage and re-estimates every
+ *  message of its own projection — the raw, unfolded history, not the sent
+ *  view. Flooring on that number pinned the meter at 120–170% after a single
+ *  failed request and fired false EMERGENCY nudges. Expects `entries` in branch
+ *  order with context edits applied but edit entries kept (applyContextEdits). */
+export function hostUsageMeasured(entries: AnchorEntry[]): boolean {
+  const scan = scanEntries(entries);
+  return scan.lastUsageIdx >= 0 && scan.lastEditIdx < scan.lastUsageIdx;
+}
+
+/** Host context tokens when they are a provider measurement (see
+ *  hostUsageMeasured), else 0 so callers fall back to the sent-view estimate. */
+export function measuredHostTokens(
+  usage: { tokens?: number | null } | null | undefined,
+  entries: AnchorEntry[],
+): number {
+  const tokens = usage?.tokens ?? 0;
+  return tokens > 0 && hostUsageMeasured(entries) ? tokens : 0;
 }
 
 /** True when the last valid assistant usage anchor comes strictly BEFORE the

@@ -34,8 +34,6 @@
   "debug": false,
   "modelContextLimit": 200000,
   "outputHeadroomMaxPct": 0.25,
-  "toolBashDefaultTimeout": 60,
-  "toolOutputMaxBytes": 50000,
 
   "throttleRetry": {
     "enabled": true,
@@ -119,8 +117,6 @@
 | `debug` | boolean | `false` | 🟢 ACTIVE | 开启日志中的详细调试事件。 |
 | `modelContextLimit` | number | *(自动)* | 🟢 ACTIVE | 覆盖上下文窗口大小（token 数）。 |
 | `outputHeadroomMaxPct` | number \| string | `0.25` | 🟢 ACTIVE | 输出预留（output headroom）占上下文窗口的比例上限。 |
-| `toolBashDefaultTimeout` | number | `60` | 🟢 ACTIVE | 模型省略 `timeout` 时注入 bash 工具的默认超时秒数。 |
-| `toolOutputMaxBytes` | number | `50000` | 🟢 ACTIVE | 工具返回文本的硬性字节上限。 |
 | `protectedTools` | string\[\] | `无` | 🟢 ACTIVE | 工具名模式（支持 glob 后缀），其**所有** call+result 对都被硬排除在压缩之外（ref 渲染为 `BLOCKED`）。适用于低频高价值、输出为独立内容的工具——见下方 ⚠ 说明。 |
 | `protectedLatestTools` | string\[\] | `无` | 🟢 ACTIVE | 工具名模式（支持 glob 后缀），仅**最近一次** call+result 对被硬排除在压缩之外；更早的对仍可压缩。适用于累积快照型工具。 |
 | `neverPreserveRecentTools` | string\[\] | 内核内置（`["decompress", "search_context", "read", "bash"]`，需 acp-kernel >= 0.0.92） | 🟢 ACTIVE | 从软保护近期区**移除**的工具名模式，让它们的结果立即可压。默认让 `read`/`bash` 保持可压；只移除 `read`（保留 `decompress`/`search_context`）可解批量读文件的「折叠→重读」死循环。**空数组 `[]` 合法**（最大保护逃生门）。 |
@@ -206,20 +202,6 @@
 - **默认值：** `0.25`
 - **状态：** 🟢 ACTIVE
 - **说明：** 输出预留（output headroom）占上下文窗口的比例上限：预留量 = min(model.maxTokens, pct × window)。该预留让 kernel 的 nudge/truncate 阈值带位于 (window − 预留量) 之下，使长回复不会把「输入 + 输出」推过窗口——适用于把输出计入窗口的 API（Anthropic Messages 除外：其输入限制独立于 max_tokens 强制执行，故豁免）。不设上限时，注册最大输出占窗口比例大的模型（如 262144 窗口配 131072 maxTokens）会失去大部分输入预算，75% 强制压缩阈值会在完整窗口的约三分之一处触发。0.25 的默认值在控制损失的同时，仍保证单轮回复不超过窗口 25% 时在 95% emergency 阈值下不溢出；更长的回复会溢出一次，由下一轮的 overflow self-heal 恢复。接受比例（`0.25`）或百分比字符串（`"25%"`）。设为 `0` 完全禁用预留；`1`（或更大）恢复旧的全额预留行为。
-
-### `toolBashDefaultTimeout`
-
-- **类型：** `number`
-- **默认值：** `60`
-- **状态：** 🟢 ACTIVE
-- **说明：** 当模型省略 `timeout` 参数时注入 `bash` 工具的超时秒数。Pi **没有**内置默认超时，因此若缺少此保护，模型忘记设置超时的命令可能会挂起数千秒。超时后模型被引导以更大的 `timeout` 重新运行。设为 `0` 可禁用此保护，恢复 Pi 的无限制行为。
-
-### `toolOutputMaxBytes`
-
-- **类型：** `number`
-- **默认值：** `50000`
-- **状态：** 🟢 ACTIVE
-- **说明：** 通过 `tool_result` 钩子对工具返回文本施加的硬性字节上限（约 50KB，约 1250 行）。与 Pi 自身对 bash/read/grep 的上限对齐——所有工具路径统一一条天花板；对 Pi 不做限制的工具（MCP/自定义）仍能拦截失控输出。触发上限时，超长文本会被头部截断，并附带提示告知模型如何查看完整输出。需要更大输出时调高、设小一些（如 `8192`）可收紧上下文预算，设为 `0` 则完全禁用。
 
 ### `protectedTools`
 

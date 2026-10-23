@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { entriesToCoreMessages, EntryProjectionCache } from "../src/messages.js";
+import { applyContextEdits, entriesToCoreMessages, EntryProjectionCache } from "../src/messages.js";
 import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 
 let seq = 0;
@@ -118,4 +118,39 @@ test("reset() drops the cache", () => {
   cache.reset();
   const grown = [...entries, ...buildHistory(1)];
   assert.deepEqual(cache.project(grown), entriesToCoreMessages(grown));
+});
+
+function editEntry(id: string, targetId: string, replacement: { content: unknown } | null): SessionEntry {
+  return { type: "context_edit", id, parentId: null, timestamp: new Date().toISOString(), targetId, replacement } as unknown as SessionEntry;
+}
+
+test("applyContextEdits: null omits the target, replacement swaps only content (pi semantics)", () => {
+  const entries: SessionEntry[] = [
+    msgEntry("u1", userMsg("q")),
+    msgEntry("a1", assistantCall("call-x", { cmd: "ls" })),
+    msgEntry("t1", toolResult("call-x", "huge output")),
+    msgEntry("a2", assistantMsg("failed attempt")),
+    editEntry("ed1", "a2", null),
+    editEntry("ed2", "t1", { content: "[trimmed]" }),
+  ];
+  const edited = applyContextEdits(entries);
+  assert.deepEqual(edited.map((e) => e.id), ["u1", "a1", "t1", "ed1", "ed2"]);
+  const t1 = edited.find((e) => e.id === "t1") as SessionMessageEntry;
+  assert.deepEqual((t1.message as { content: unknown }).content, [{ type: "text", text: "[trimmed]" }]);
+  assert.equal((t1.message as { toolCallId?: string }).toolCallId, "call-x", "metadata kept");
+  const cores = entriesToCoreMessages(edited);
+  assert.ok(!cores.some((c) => c.id === "a2"), "omitted attempt is not projected");
+  assert.ok(!cores.some((c) => (c.text ?? "").includes("huge output")), "replaced content is not projected");
+  const plain = entries.slice(0, 4);
+  assert.equal(applyContextEdits(plain), plain, "no edits → same array");
+});
+
+test("incremental projection re-projects when a new context_edit rewrites an earlier entry", () => {
+  const cache = new EntryProjectionCache();
+  const base: SessionEntry[] = [msgEntry("u1", userMsg("q")), msgEntry("t1", toolResult("call-1", "original output")), msgEntry("a1", assistantMsg("done"))];
+  cache.project(applyContextEdits(base));
+  const next = applyContextEdits([...base, editEntry("ed1", "t1", { content: "replaced" })]);
+  const projected = cache.project(next);
+  assert.deepEqual(projected, entriesToCoreMessages(next));
+  assert.ok(!projected.some((c) => (c.text ?? "").includes("original output")));
 });

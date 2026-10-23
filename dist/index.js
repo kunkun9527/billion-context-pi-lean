@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-C3GD6WZH.js";
+} from "./chunk-HDNA4HMC.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -177,8 +177,6 @@ var KNOWN = /* @__PURE__ */ new Set([
   "protectedLatestTools",
   "neverPreserveRecentTools",
   "preserveRecentTools",
-  "toolBashDefaultTimeout",
-  "toolOutputMaxBytes",
   "compress",
   "throttleRetry",
   "idleCompact",
@@ -12122,8 +12120,6 @@ function makePreview(text, query, len) {
 }
 
 // src/config.ts
-var DEFAULT_TOOL_BASH_TIMEOUT = 60;
-var DEFAULT_TOOL_OUTPUT_MAX_BYTES = 5e4;
 var REPETITION_GUARD_DEFAULTS = { warn: 3, abort: 5 };
 function positiveInt(v2, fallback) {
   return typeof v2 === "number" && Number.isFinite(v2) && v2 >= 1 ? Math.floor(v2) : fallback;
@@ -12262,6 +12258,36 @@ function withFacadeResultNames(cores) {
   }
   return out;
 }
+function isContextEdit(entry) {
+  return entry.type === "context_edit";
+}
+function applyContextEdits(entries) {
+  let edits;
+  for (const entry of entries) {
+    if (isContextEdit(entry)) {
+      const edit = entry;
+      (edits ??= /* @__PURE__ */ new Map()).set(edit.targetId, edit);
+    }
+  }
+  if (!edits) return entries;
+  const out = [];
+  for (const entry of entries) {
+    const edit = edits.get(entry.id);
+    if (!edit) out.push(entry);
+    else if (edit.replacement !== null) out.push(replaceEntryContent(entry, edit.replacement.content));
+  }
+  return out;
+}
+function replaceEntryContent(entry, content) {
+  if (entry.type === "message") {
+    const role = entry.message.role;
+    if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "custom") return entry;
+    const next = (role === "assistant" || role === "toolResult") && typeof content === "string" ? [{ type: "text", text: content }] : content;
+    return { ...entry, message: { ...entry.message, content: next } };
+  }
+  if (entry.type === "custom_message") return { ...entry, content };
+  return entry;
+}
 var MAX_INCREMENTAL_ENTRIES = 64;
 var EntryProjectionCache = class {
   count = 0;
@@ -12273,7 +12299,7 @@ var EntryProjectionCache = class {
    *  internal array is shared across turns, and callers hand it to kernel code
    * that must never observe (or mutate) cross-turn state. */
   project(entries) {
-    if (this.count > 0 && entries.length >= this.count && entries.length - this.count <= MAX_INCREMENTAL_ENTRIES && this.firstId !== null && this.lastId !== null && entries[0]?.id === this.firstId && entries[this.count - 1]?.id === this.lastId) {
+    if (this.count > 0 && entries.length >= this.count && entries.length - this.count <= MAX_INCREMENTAL_ENTRIES && this.firstId !== null && this.lastId !== null && entries[0]?.id === this.firstId && entries[this.count - 1]?.id === this.lastId && !entries.slice(this.count).some(isContextEdit)) {
       for (let i = this.count; i < entries.length; i++) {
         const entry = entries[i];
         if (entry.type === "message") {
@@ -19286,7 +19312,7 @@ function createRuntime(adapter) {
     const sessionFile = sm.getSessionFile() ?? void 0;
     const sessionId = sm.getSessionId();
     let state = await store.load(sessionFile, sessionId);
-    const entries = sm.buildContextEntries();
+    const entries = applyContextEdits(sm.buildContextEntries());
     if (sessionFile && state.blocks.length === 0 && hasCompressHistory(entries)) {
       const rebuilt = rebuildStateFromLog({ entries, state, config: configFor(ctx), core });
       if (rebuilt.report.blocks > 0) {
@@ -19773,7 +19799,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.2.2";
+    return "0.2.3";
   } catch {
     return "dev";
   }
@@ -19893,8 +19919,10 @@ function validAnchorUsage(u) {
 function scanEntries(entries) {
   let lastUsageIdx = -1;
   let lastCompressIdx = -1;
+  let lastEditIdx = -1;
   const compressIdxByCallId = /* @__PURE__ */ new Map();
   for (let i = 0; i < entries.length; i++) {
+    if (entries[i].type === "context_edit") lastEditIdx = i;
     const m2 = entries[i].message;
     if (!m2) continue;
     if (m2.role === "assistant" && m2.stopReason !== "aborted" && m2.stopReason !== "error" && validAnchorUsage(m2.usage)) {
@@ -19904,7 +19932,15 @@ function scanEntries(entries) {
       compressIdxByCallId.set(m2.toolCallId, i);
     }
   }
-  return { lastUsageIdx, lastCompressIdx, compressIdxByCallId };
+  return { lastUsageIdx, lastEditIdx, lastCompressIdx, compressIdxByCallId };
+}
+function hostUsageMeasured(entries) {
+  const scan = scanEntries(entries);
+  return scan.lastUsageIdx >= 0 && scan.lastEditIdx < scan.lastUsageIdx;
+}
+function measuredHostTokens(usage, entries) {
+  const tokens = usage?.tokens ?? 0;
+  return tokens > 0 && hostUsageMeasured(entries) ? tokens : 0;
 }
 function usageAnchorPredatesCompression(entries) {
   const scan = scanEntries(entries);
@@ -19965,7 +20001,7 @@ async function handleStatus(args, runtime, ctx) {
   const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
   const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
   const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
-  const providerReal = ctx.getContextUsage?.()?.tokens ?? 0;
+  const providerReal = measuredHostTokens(ctx.getContextUsage?.(), entries);
   const anchorStale = usageAnchorPredatesCompression(entries);
   const turn = runtime.core.processTurn({
     messages: coreMessages,
@@ -20153,7 +20189,7 @@ function firstUserText(entries) {
 async function loadSession(jsonlPath, store) {
   const sm = SessionManager.open(jsonlPath);
   const id = sm.getSessionId();
-  const entries = sm.buildContextEntries();
+  const entries = applyContextEdits(sm.buildContextEntries());
   const state = await store.load(jsonlPath, id);
   const coreMessages = entriesToCoreMessages(entries);
   const contextTokens = coreMessages.reduce((sum, m2) => sum + defaultCountTokens(m2.text ?? ""), 0);
@@ -20679,6 +20715,7 @@ async function statusReport(runtime, ctx) {
   const { state, coreMessages, entries } = await runtime.stateFor(ctx);
   const config = applyOutputHeadroom(runtime.configFor(ctx), ctx.model, resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct));
   const realUsage = ctx.getContextUsage?.();
+  const realTokens = measuredHostTokens(realUsage, entries ?? []);
   const anchorStale = usageAnchorPredatesCompression(entries ?? []);
   const systemPromptText = ctx.getSystemPrompt?.() ?? "";
   const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
@@ -20689,8 +20726,8 @@ async function statusReport(runtime, ctx) {
   const coveredIds = collectCoveredMessageIds(state);
   const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
   const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
-  const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, realUsage?.tokens ?? 0) });
-  const versionStr = "0.2.2" ? `billion-context-pi@${"0.2.2"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, realTokens) });
+  const versionStr = "0.2.3" ? `billion-context-pi@${"0.2.3"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -21238,33 +21275,8 @@ function applyStripImages(body, api, settings2) {
 // src/tool-guardrails.ts
 import { createHash as createHash4 } from "crypto";
 import {
-  isBashToolResult,
-  isToolCallEventType
+  isBashToolResult
 } from "@earendil-works/pi-coding-agent";
-function resolveBashTimeout(input, defaultTimeout) {
-  if (input.timeout !== void 0) return void 0;
-  const d2 = defaultTimeout ?? DEFAULT_TOOL_BASH_TIMEOUT;
-  if (!Number.isFinite(d2) || d2 <= 0) return void 0;
-  return d2;
-}
-function capToolOutput(content, maxBytes, fullPath) {
-  const max = maxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
-  if (!Number.isFinite(max) || max <= 0) return void 0;
-  const kept = [];
-  const texts = [];
-  for (const c of content) {
-    if (c.type === "text") texts.push(c.text);
-    else kept.push(c);
-  }
-  if (texts.length === 0) return void 0;
-  const combined = texts.join("\n");
-  const total = Buffer.byteLength(combined, "utf8");
-  if (total <= max) return void 0;
-  const head = keepHead(combined, max);
-  const dropped = total - Buffer.byteLength(head, "utf8");
-  kept.push({ type: "text", text: head + buildCapNotice(dropped, max, fullPath) });
-  return kept;
-}
 var TIMEOUT_RE = /Command timed out after (\d+) seconds/;
 function detectBashTimeout(content) {
   for (const c of content) {
@@ -21289,34 +21301,11 @@ function appendTrailingText(content, notice) {
 function appendTimeoutNotice(content, secs) {
   return appendTrailingText(content, buildTimeoutNotice(secs));
 }
-function keepHead(str, maxBytes) {
-  const buf = Buffer.from(str, "utf8");
-  if (buf.length <= maxBytes) return str;
-  let end = maxBytes;
-  while (end > 0) {
-    const b2 = buf[end];
-    if (b2 === void 0 || (b2 & 192) !== 128) break;
-    end--;
-  }
-  let head = buf.subarray(0, end).toString("utf8");
-  const nl = head.lastIndexOf("\n");
-  if (nl >= Math.floor(maxBytes / 2)) head = head.slice(0, nl);
-  return head;
-}
-function buildCapNotice(dropped, maxBytes, fullPath) {
-  const where = fullPath ? `Full output saved to: ${fullPath} \u2014 read it to see everything.` : "To see more, narrow the query or redirect output to a file and read the relevant slice.";
-  return `
-
-[ACP guardrail: output capped at ${formatBytes(maxBytes)} (~${formatBytes(dropped)} dropped). ${where}]`;
-}
 function buildTimeoutNotice(secs) {
   const suggested = Math.min(Math.max(Math.ceil(secs * 2), 120), 3600);
   return `
 
 [ACP guardrail: command killed after ${secs}s. To give it more time, re-run the bash tool with a larger \`timeout\` argument (e.g. \`"timeout": ${suggested}\`).]`;
-}
-function formatBytes(n) {
-  return n >= 1024 ? `${(n / 1024).toFixed(1)}KB` : `${n}B`;
 }
 function canonicalStringify(value) {
   if (value === null || value === void 0 || typeof value !== "object") {
@@ -21376,13 +21365,6 @@ function wireToolGuardrails(pi, runtime) {
   const trackers = /* @__PURE__ */ new Map();
   const pendingWarns = /* @__PURE__ */ new Map();
   pi.on("tool_call", (event, ctx) => {
-    if (isToolCallEventType("bash", event)) {
-      const t = resolveBashTimeout(event.input, runtime.adapter.toolBashDefaultTimeout);
-      if (t !== void 0) {
-        event.input.timeout = t;
-        debug.event("guardrail-bash-timeout", { applied: t });
-      }
-    }
     const cfg = resolveRepetitionGuard(runtime.adapter);
     if (!cfg.enabled) return;
     const sid = ctx.sessionManager.getSessionId();
@@ -21410,16 +21392,8 @@ function wireToolGuardrails(pi, runtime) {
   });
   pi.on("tool_result", (event) => {
     const isBash = isBashToolResult(event);
-    const fullPath = isBash ? event.details?.fullOutputPath : void 0;
     const timeoutSecs = isBash && event.isError ? detectBashTimeout(event.content) : void 0;
     let modified;
-    const max = runtime.adapter.toolOutputMaxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
-    const next = capToolOutput(event.content, max, fullPath);
-    if (next) {
-      modified = next;
-      debug.event("guardrail-output-cap", { max, hadPath: !!fullPath });
-      logWarn("guardrail", { event: "output-cap", max, hadPath: !!fullPath });
-    }
     if (timeoutSecs !== void 0) {
       modified = appendTimeoutNotice(modified ?? event.content, timeoutSecs);
       debug.event("guardrail-bash-timeout-notice", { secs: timeoutSecs });
@@ -21707,32 +21681,6 @@ var PANEL_ITEMS = [
   modelKeyItem("nudgeGrowthTokens", "Nudge interval", "Below Context threshold, the compress nudge waits until about this many tokens of old, compressible content have piled up (default 50K). Bigger: fewer nudges, more folded at once. Current model only.", ["30K", "50K", "70K", "100K", "150K", "200K"], k, parseK),
   modelKeyItem("minPressureBenefitTokens", "Minimum benefit", "No compress nudge, and no idle compact turn, when less than this could be reclaimed (default: larger of 5K and 1% of the window). Current model only.", ["5K", "10K", "20K", "30K", "50K"], k, parseK),
   {
-    id: "toolOutputMaxBytes",
-    label: "Tool output cap",
-    description: `Keeps one huge tool result from flooding the context: a result larger than this is cut, with a note telling the model where the full output is (default ${k(DEFAULT_TOOL_OUTPUT_MAX_BYTES)} bytes). Pi's own bash/read already stop at 50KB; this mainly catches MCP and other extensions' tools. off = keep everything.`,
-    values: (current) => withCurrent(["8K", "20K", "50K", "100K", OFF], current),
-    read(a) {
-      const v2 = a.toolOutputMaxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
-      return v2 === 0 ? OFF : k(v2);
-    },
-    write(raw, value) {
-      raw.toolOutputMaxBytes = value === OFF ? 0 : parseK(value);
-    }
-  },
-  {
-    id: "toolBashDefaultTimeout",
-    label: "bash default timeout",
-    description: "Keeps a stuck command from making the session wait forever: when the model gives no timeout, bash may run this many seconds (default 60), then the model is told to re-run with a larger one. Pi itself has no default timeout. off = no limit.",
-    values: (current) => withCurrent(["30", "60", "120", "300", OFF], current),
-    read(a) {
-      const v2 = a.toolBashDefaultTimeout ?? 60;
-      return v2 === 0 ? OFF : String(v2);
-    },
-    write(raw, value) {
-      raw.toolBashDefaultTimeout = value === OFF ? 0 : Number(value);
-    }
-  },
-  {
     id: "debug",
     label: "Debug log",
     description: "Write detailed events to ~/.pi/acp.log for troubleshooting. Errors and main events are always logged.",
@@ -21986,7 +21934,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     dropLiveOnlyTailCache(ctx.sessionManager.getSessionId());
     const sid = ctx.sessionManager.getSessionId();
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.2.2" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.2.3" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {
@@ -22081,7 +22029,7 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         logWarn("overflow-selfheal", { sid, event: "armed-emergency", floor: armedFloor, limit: config.modelContextLimit });
       }
       const { predates, netReclaimed } = compressionAnchorStaleness(entries, state.blocks, defaultCountTokens);
-      const realPromptTokens = realUsage?.tokens ?? 0;
+      const realPromptTokens = measuredHostTokens(realUsage, entries);
       const hostFloor = realPromptTokens > 0 ? Math.max(0, realPromptTokens - (predates ? netReclaimed : 0)) : 0;
       const hostUsageStable = !predates && realPromptTokens > 0 ? runtime.noteHostUsage(sid, realPromptTokens) : false;
       const calibrate = (base) => hostUsageStable ? Math.min(base, Math.ceil(realPromptTokens * 1.2)) : base;
@@ -22201,7 +22149,8 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         // tokens/pct above stay on one scale; field order after activeBlocks
         // keeps the pre-existing [turn] layout stable for log consumers.
         hostTokens: realUsage?.tokens ?? null,
-        hostPct: realUsage?.percent ?? null
+        hostPct: realUsage?.percent ?? null,
+        ...realUsage?.tokens && realPromptTokens === 0 ? { hostIgnored: "estimate" } : {}
       });
       debug.event("processTurn", {
         modelId,

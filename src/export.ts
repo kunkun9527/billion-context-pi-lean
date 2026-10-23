@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { renderHandoff, matchSession, defaultCountTokens, type CompressionState } from "acp-kernel";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import { entriesToCoreMessages, extractText } from "./messages.js";
+import { applyContextEdits, entriesToCoreMessages, extractText } from "./messages.js";
 import { SessionStateStore } from "./state.js";
 
 // The full conversation always lives in Pi's .jsonl; ACP state in the adjacent
@@ -59,7 +59,7 @@ function firstUserText(entries: SessionEntry[]): string | undefined {
 async function loadSession(jsonlPath: string, store: SessionStateStore): Promise<LoadedSession> {
   const sm = SessionManager.open(jsonlPath);
   const id = sm.getSessionId();
-  const entries = sm.buildContextEntries();
+  const entries = applyContextEdits(sm.buildContextEntries());
   const state = await store.load(jsonlPath, id);
   const coreMessages = entriesToCoreMessages(entries);
   const contextTokens = coreMessages.reduce((sum, m) => sum + defaultCountTokens(m.text ?? ""), 0);

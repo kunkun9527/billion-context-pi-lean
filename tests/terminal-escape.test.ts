@@ -38,6 +38,12 @@ test("terminal-escape and truncation-skipped are logged once per stuck episode",
     type: "message", id: `e${i}`, parentId: null, timestamp: "",
     message: { role: "user", content: `small message ${i} — nothing big enough to truncate or compress`, timestamp: Date.now() },
   }));
+  // The host usage below is a provider measurement only when anchored on a
+  // valid assistant usage (floor-stale.ts hostUsageMeasured).
+  entries.push({
+    type: "message", id: "e-anchor", parentId: null, timestamp: "",
+    message: { role: "assistant", content: "ok", usage: { input: 9_800, output: 1, cacheRead: 0, cacheWrite: 0 }, timestamp: Date.now() } as any,
+  });
   let usage: { tokens: number; percent: number } | null = null;
   const ctx = {
     mode: "rpc",

@@ -11,7 +11,7 @@ import {
 import { resolveCompress, resolveConfig, type AdapterConfig } from "./config.js";
 import { applyStrictReasoningGate, resolveReasoningDrop, type CompressReasoningConfig } from "./reasoning-drop.js";
 import type { SentViewMeterRecord } from "./tokens.js";
-import { entriesToCoreMessages, EntryProjectionCache } from "./messages.js";
+import { applyContextEdits, entriesToCoreMessages, EntryProjectionCache } from "./messages.js";
 import { SessionStateStore } from "./state.js";
 import { hasCompressHistory, rebuildStateFromLog } from "./state-rebuild.js";
 import { loadUserConfig, applyUserConfig, saveCompressionModelId } from "./user-config.js";
@@ -534,7 +534,7 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
     const sessionFile = sm.getSessionFile() ?? undefined;
     const sessionId = sm.getSessionId();
     let state = await store.load(sessionFile, sessionId);
-    const entries = sm.buildContextEntries();
+    const entries = applyContextEdits(sm.buildContextEntries());
     // Issue #299 (ranxianglei/billion-context-pi#299): pi's importFromJsonl
     // copies only the .jsonl, so the `${sessionFile}.acp.json` sidecar never
     // travels with an imported session and compression state silently resets

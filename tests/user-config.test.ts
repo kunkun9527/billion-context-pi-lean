@@ -167,10 +167,9 @@ test("applyUserConfig merges user config onto adapter config", () => {
     debug: false,
     preserveRecentMessages: 5000,
   };
-  const user = { debug: true, toolOutputMaxBytes: 50000 };
+  const user = { debug: true };
   const result = applyUserConfig(adapter, user);
   assert.equal(result.debug, true, "user debug overrides adapter");
-  assert.equal(result.toolOutputMaxBytes, 50000, "user toolOutputMaxBytes added");
   assert.equal(result.modelContextLimit, 200_000, "adapter modelContextLimit preserved");
 });
 
@@ -204,18 +203,27 @@ test("applyUserConfig supports all user config keys", () => {
   const user = {
     debug: true,
     modelContextLimit: 50_000,
-    toolBashDefaultTimeout: 120,
-    toolOutputMaxBytes: 100_000,
     outputHeadroomMaxPct: 0.1,
     rules: true,
   };
   const result = applyUserConfig(adapter, user);
   assert.equal(result.debug, true);
   assert.equal(result.modelContextLimit, 50_000);
-  assert.equal(result.toolBashDefaultTimeout, 120);
-  assert.equal(result.toolOutputMaxBytes, 100_000);
   assert.equal(result.outputHeadroomMaxPct, 0.1);
   assert.equal(result.rules, true);
+});
+
+test("loadUserConfig drops removed keys silently", async () => {
+  const tmpDir = path.join(os.tmpdir(), `acp-test-drop-keys-${Date.now()}`);
+  await fs.mkdir(tmpDir, { recursive: true });
+  try {
+    await writeConfig(tmpDir, { toolBashDefaultTimeout: 120, toolOutputMaxBytes: 50_000 } as never);
+    const config = await loadUserConfig(tmpDir);
+    assert.equal((config as Record<string, unknown>).toolBashDefaultTimeout, undefined);
+    assert.equal((config as Record<string, unknown>).toolOutputMaxBytes, undefined);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("loadUserConfig picks up protection keys from acp.json", async () => {

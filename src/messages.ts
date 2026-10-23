@@ -112,6 +112,57 @@ function withFacadeResultNames(cores: CoreMessage[]): CoreMessage[] {
   return out;
 }
 
+/** Pi `context_edit` entry (session-manager.d.ts ContextEditEntry, Pi >= 1.x;
+ *  declared locally because the pinned dev types predate it). */
+interface ContextEditLike {
+  type: "context_edit";
+  targetId: string;
+  replacement: { content: unknown } | null;
+}
+
+function isContextEdit(entry: SessionEntry): boolean {
+  return (entry as { type: string }).type === "context_edit";
+}
+
+/** Apply Pi `context_edit` entries the way Pi's own buildSessionProjection does
+ *  (projectContextEntry): `replacement: null` omits the target from model
+ *  context, otherwise only its content is replaced (assistant/toolResult string
+ *  content becomes one text part). `buildContextEntries()` returns the raw path,
+ *  so without this the rebuild re-sends attempts Pi omitted (auto-retry's
+ *  _omitRecoveryAttempt) and ignores content replacements. The edit entries
+ *  themselves stay in the array (they project to nothing) so callers can see
+ *  where an edit happened. Returns `entries` itself when there is no edit. */
+export function applyContextEdits(entries: SessionEntry[]): SessionEntry[] {
+  let edits: Map<string, ContextEditLike> | undefined;
+  for (const entry of entries) {
+    if (isContextEdit(entry)) {
+      const edit = entry as unknown as ContextEditLike;
+      (edits ??= new Map()).set(edit.targetId, edit);
+    }
+  }
+  if (!edits) return entries;
+  const out: SessionEntry[] = [];
+  for (const entry of entries) {
+    const edit = edits.get(entry.id);
+    if (!edit) out.push(entry);
+    else if (edit.replacement !== null) out.push(replaceEntryContent(entry, edit.replacement.content));
+  }
+  return out;
+}
+
+function replaceEntryContent(entry: SessionEntry, content: unknown): SessionEntry {
+  if (entry.type === "message") {
+    const role = (entry.message as { role?: string }).role;
+    if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "custom") return entry;
+    const next = (role === "assistant" || role === "toolResult") && typeof content === "string"
+      ? [{ type: "text", text: content }]
+      : content;
+    return { ...entry, message: { ...entry.message, content: next } } as SessionEntry;
+  }
+  if (entry.type === "custom_message") return { ...entry, content } as SessionEntry;
+  return entry;
+}
+
 // Conservative cap on how many entries an incremental projection may append in
 // one turn: a healthy host appends a handful per turn, and anything larger means
 // the structural assumption misfired — fall back to a full projection instead of
@@ -129,7 +180,8 @@ const MAX_INCREMENTAL_ENTRIES = 64;
  *    - count only ever GROWS (a drop = host rewind/truncate → full reproject),
  *    - the first and last cached boundary entries still carry the same ids
  *      (canaries against in-place rewrites the count check cannot see),
- *    - at most MAX_INCREMENTAL_ENTRIES new entries per turn.
+ *    - at most MAX_INCREMENTAL_ENTRIES new entries per turn,
+ *    - no new `context_edit` entry (it rewrites an EARLIER entry's contribution).
  *  Any doubt → full entriesToCoreMessages, identical result, just slower. */
 export class EntryProjectionCache {
   private count = 0;
@@ -149,7 +201,8 @@ export class EntryProjectionCache {
       this.firstId !== null &&
       this.lastId !== null &&
       entries[0]?.id === this.firstId &&
-      entries[this.count - 1]?.id === this.lastId
+      entries[this.count - 1]?.id === this.lastId &&
+      !entries.slice(this.count).some(isContextEdit)
     ) {
       for (let i = this.count; i < entries.length; i++) {
         const entry = entries[i]!;

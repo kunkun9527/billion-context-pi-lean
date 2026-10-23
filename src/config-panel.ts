@@ -2,7 +2,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Input, SelectList, SettingsList, Text, fuzzyFilter, getKeybindings, type Component, type SettingItem } from "@earendil-works/pi-tui";
 import type { AdapterConfig, CompressSettings } from "./config.js";
-import { DEFAULT_TOOL_OUTPUT_MAX_BYTES, resolveCompress } from "./config.js";
+import { resolveCompress } from "./config.js";
 import { DEFAULT_IDLE_MINUTES, resolveIdleCompact, type IdleCompactHandle } from "./idle-compact.js";
 import type { AcpRuntime } from "./runtime.js";
 import { SESSION_MODEL_REF } from "./compress-model.js";
@@ -116,7 +116,7 @@ function modelKeyItem(
 }
 
 /** Order = importance: summary model and idle compact first, per-model
- *  compression next, tool guardrails and debug last. */
+ *  compression next, debug last. */
 export const PANEL_ITEMS: PanelItem[] = [
   {
     id: "compressionModelId",
@@ -152,32 +152,6 @@ export const PANEL_ITEMS: PanelItem[] = [
   modelKeyItem("maxContextLimit", "Context threshold", "Share of the window above which the compress nudge stops waiting for Nudge interval and appears whenever Minimum benefit could be reclaimed (default 75%). Not a hard cap. Current model only.", ["40%", "45%", "50%", "60%", "70%", "75%", "80%"], pct, (v) => Number(v.slice(0, -1)) / 100),
   modelKeyItem("nudgeGrowthTokens", "Nudge interval", "Below Context threshold, the compress nudge waits until about this many tokens of old, compressible content have piled up (default 50K). Bigger: fewer nudges, more folded at once. Current model only.", ["30K", "50K", "70K", "100K", "150K", "200K"], k, parseK),
   modelKeyItem("minPressureBenefitTokens", "Minimum benefit", "No compress nudge, and no idle compact turn, when less than this could be reclaimed (default: larger of 5K and 1% of the window). Current model only.", ["5K", "10K", "20K", "30K", "50K"], k, parseK),
-  {
-    id: "toolOutputMaxBytes",
-    label: "Tool output cap",
-    description: `Keeps one huge tool result from flooding the context: a result larger than this is cut, with a note telling the model where the full output is (default ${k(DEFAULT_TOOL_OUTPUT_MAX_BYTES)} bytes). Pi's own bash/read already stop at 50KB; this mainly catches MCP and other extensions' tools. off = keep everything.`,
-    values: (current) => withCurrent(["8K", "20K", "50K", "100K", OFF], current),
-    read(a) {
-      const v = a.toolOutputMaxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
-      return v === 0 ? OFF : k(v);
-    },
-    write(raw, value) {
-      raw.toolOutputMaxBytes = value === OFF ? 0 : parseK(value);
-    },
-  },
-  {
-    id: "toolBashDefaultTimeout",
-    label: "bash default timeout",
-    description: "Keeps a stuck command from making the session wait forever: when the model gives no timeout, bash may run this many seconds (default 60), then the model is told to re-run with a larger one. Pi itself has no default timeout. off = no limit.",
-    values: (current) => withCurrent(["30", "60", "120", "300", OFF], current),
-    read(a) {
-      const v = a.toolBashDefaultTimeout ?? 60;
-      return v === 0 ? OFF : String(v);
-    },
-    write(raw, value) {
-      raw.toolBashDefaultTimeout = value === OFF ? 0 : Number(value);
-    },
-  },
   {
     id: "debug",
     label: "Debug log",

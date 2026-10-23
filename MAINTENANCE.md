@@ -42,7 +42,9 @@
 - 计量复用：`sentViewMeterMatches` 用活动块签名（块 id、覆盖数、runId、tier、摘要长度）和历史金丝雀（记录时的消息数、首尾 id，要求这一轮只是在后面追加），记录上一轮的原始估算，采用时加上这一轮的新增（`adoptedViewTokens`）；原始估算变小、分支切换、回退或就地 refold 都会重新测量。
 - compress 调用里实际会发出去的 thinking 计入估算（`keptCompressThinkingTokens`，和请求时的删除规则一致），只在 context 钩子里用；`acp_status` 等显示的数字没有加这一项。compress 的工具结果计入 `estimateTokens`；调用参数仍跳过，因为块摘要已经由内核的摘要消息计过一次。
 - `acp_context` 的调用和结果在投影里用它包装的 op 名（decompress/search_context/…），内核按工具名的策略（`neverPreserveRecentTools`、受保护工具等）因此对外壳生效；出站消息仍是 `acp_context`。
-- 测试：`tests/lean-rewrite-guards.test.ts`、`tests/sent-view-meter.test.ts`、`tests/tokens.test.ts`、`tests/integration.test.ts` 末尾的紧急截断用例。
+- 应用 Pi 的 `context_edit`（`applyContextEdits`，`src/messages.ts`）：`buildContextEntries()` 只返回原始路径，不应用编辑；Pi 自动重试（`_omitRecoveryAttempt`）用 `replacement: null` 的编辑删掉失败尝试，不处理就会被重建的请求重新发出。语义照 Pi `buildSessionProjection`：`null` 省略目标，否则只替换 content（assistant/toolResult 的字符串转成一个 text part）；编辑条目本身保留在数组里（投影为空），供下面的判断定位。`runtime.stateFor` 和 `/acp export` 都先过它；增量投影缓存遇到新的 `context_edit` 就整体重投影。
+- 宿主用量只在是实测值时使用（`measuredHostTokens`，`src/floor-stale.ts`）：`getContextUsage()` 只有锚定在一条有效 assistant usage（非 error/aborted、usage>0）且其后没有 `context_edit` 时才是 provider 实测；否则 Pi 的 `estimateProjectedContextTokens` 会按字符粗估自己的整段投影，也就是未折叠的原始历史（2026-10-21 一例：发送视图 54K，宿主报 641,881）。此时 context 钩子不设 hostFloor、不校准、不喂溢出守卫，`/acp` 面板和 `acp_status` 的仲裁也一样；面板里标着 host footer scale 的那一行仍照搬 Pi 的数字。turn 日志记 `hostIgnored=estimate`。
+- 测试：`tests/lean-rewrite-guards.test.ts`、`tests/sent-view-meter.test.ts`、`tests/tokens.test.ts`、`tests/integration.test.ts` 末尾的紧急截断用例，`tests/floor-stale.test.ts`、`tests/incremental-projection.test.ts` 的 context_edit 用例。
 
 ### 系统提示
 
@@ -60,6 +62,10 @@
 ### 移除子代理（Delegation）
 
 子代理不属于上下文管理，整套删除：`acp_delegate`/`acp_delegate_wait`/`acp_delegate_cancel` 工具、fleet 面板和 `/acp-fleet`、`/acp-subagents` 与 pi-subagents 检测、`ACP_DELEGATE NOTIFICATIONS` 系统提示附录、`acp_status` 里的 delegate 用量，以及配置键 `delegate.*`、顶层 `displayUsage`、`delegatePrompt` 和 `PI_ACP_DELEGATE_*` 环境变量。旧 acp.json 里的这些键按未知键忽略，不报错。需要子代理时用独立的子代理扩展；它的会话照常由 ACP 管理。
+
+### 移除 bash 默认超时和工具输出上限
+
+这两项不属于上下文管理，移植 [keel-fold](https://github.com/SeniorHan/keel-fold) 的 `3189c29`、`8719091` 删除：`toolBashDefaultTimeout`（模型没给 timeout 时注入 60 秒）和 `toolOutputMaxBytes`（工具结果超 50,000 字节截头），连同 `/acp-config` 的两项。Pi 自己按 2000 行/50KB 截断 bash/read/grep 并把完整输出存文件，ACP 的上限比它略低，基本只在 50,000–51,200 字节之间触发，反而切掉 Pi 的截断说明；超时交给 bash 工具或 bash 扩展。旧 acp.json 里的这两个键静默忽略。保留：Pi 报告 bash 超时时附加的重跑提示（`detectBashTimeout`）和重复调用防护。
 
 ### Lean 外壳
 

@@ -25,7 +25,7 @@ export interface PanelItem {
     write(raw: Raw, value: string, scope: PanelScope): void;
 }
 /** Order = importance: summary model and idle compact first, per-model
- *  compression next, tool guardrails and debug last. */
+ *  compression next, debug last. */
 export declare const PANEL_ITEMS: PanelItem[];
 export declare function panelItemsFor(scope: PanelScope): PanelItem[];
 /** Apply one panel change to a parsed acp.json object (mutates). */

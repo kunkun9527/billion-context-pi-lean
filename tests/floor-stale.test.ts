@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CompressionBlock } from "acp-kernel";
-import { usageAnchorPredatesCompression, compressionAnchorStaleness } from "../src/floor-stale.js";
+import { usageAnchorPredatesCompression, compressionAnchorStaleness, hostUsageMeasured, measuredHostTokens } from "../src/floor-stale.js";
 
 // The issue #257 floor must be skipped while the host's provider-usage anchor
 // (the usage on the last valid assistant message) predates the last
@@ -179,4 +179,40 @@ test("staleness: sums multiple post-anchor blocks", () => {
   ], ct);
   assert.equal(r.predates, true);
   assert.equal(r.netReclaimed, 2990);
+});
+
+// Failed request → pi auto-retry appends a context_edit omitting the attempt;
+// pi then re-estimates the raw, unfolded history (641,881 vs a 54K sent view in
+// the 2026-10-21 log). Only a measured anchor may floor the meter.
+const contextEdit = (id: string, targetId: string) => ({ type: "context_edit", id, parentId: null, timestamp: "", targetId, replacement: null });
+
+test("measuredHostTokens: valid anchor with no later edit is a measurement", () => {
+  const entries = [msg("e0", { role: "user", content: "go" }), assistantUsage("e1")];
+  assert.equal(hostUsageMeasured(entries), true);
+  assert.equal(measuredHostTokens({ tokens: 175_000 }, entries), 175_000);
+});
+
+test("measuredHostTokens: context_edit after the anchor means pi is estimating", () => {
+  const entries = [
+    msg("e0", { role: "user", content: "go" }),
+    assistantUsage("e1"),
+    msg("e2", { role: "user", content: "next" }),
+    contextEdit("e4", "e3"), // failed attempt e3 already omitted by applyContextEdits
+  ];
+  assert.equal(hostUsageMeasured(entries), false);
+  assert.equal(measuredHostTokens({ tokens: 641_881 }, entries), 0);
+});
+
+test("measuredHostTokens: a fresh anchor after the edit is trusted again", () => {
+  const entries = [assistantUsage("e1"), contextEdit("e3", "e2"), assistantUsage("e4")];
+  assert.equal(measuredHostTokens({ tokens: 66_977 }, entries), 66_977);
+});
+
+test("measuredHostTokens: no valid anchor (errors only) is an estimate", () => {
+  const entries = [
+    msg("e0", { role: "user", content: "go" }),
+    msg("e1", { role: "assistant", content: [], stopReason: "error", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+  ];
+  assert.equal(measuredHostTokens({ tokens: 594_166 }, entries), 0);
+  assert.equal(measuredHostTokens(undefined, [assistantUsage("e1")]), 0);
 });

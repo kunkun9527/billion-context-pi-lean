@@ -36,6 +36,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 | 工具和常驻提示词 | 5 个上下文工具 + 3 个子代理工具，约 8,700 token（`promptPack: "lean"` 时约 4,900） | `compress` + `acp_context`，486 token（[对比](#上下文占用对比)）。常驻提示词只保留调用前必须知道的规则，其余说明随压缩提醒、报错和工具结果给出 |
 | 系统提示词 | 返回整份系统提示词，在 Pi 1.x 上会丢掉之后加载的扩展追加的提示词 | 作为独立段落注入，其他扩展的内容保留 |
 | 子代理委派、自动更新 | 内置 | 已移除。子代理请用专门的扩展，它们的会话仍由 ACP 管理 |
+| bash 默认超时、工具输出上限 | 内置（`toolBashDefaultTimeout`、`toolOutputMaxBytes`） | 已移除：不属于上下文管理。Pi 自己会截断 bash/read/grep 的输出；超时交给 bash 工具或 bash 扩展 |
 
 \* 按压缩提醒中规则文本的长度，以 `ceil(字符数 / 4)` 估算，不是计费 token。
 
@@ -50,6 +51,8 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 - 用 `/tree` 回到某个块的中间时，它的摘要可能带出当前分支还没走到的决定。
 - 在 Windows 上，消息 ref 含 `|` 时解压到文件会失败。
 - 测试会写进真实的 `~/.pi`。
+- 请求失败后 Pi 会改为粗估整段未折叠的原始历史，ACP 把它当成下限，显示 120–170% 并误发紧急压缩提醒，直到下一次成功回复。
+- 忽略了 Pi 的 `context_edit`，Pi 在失败后删掉的尝试会被重新发出。
 
 详见 [CHANGELOG.md](CHANGELOG.md)、[MAINTENANCE.md](MAINTENANCE.md)。
 
@@ -61,7 +64,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 
 | 版本 | 工具与提示词构成 | 合计 |
 | --- | --- | ---: |
-| Lean `billion-context-pi-lean@0.2.2` | `compress` (231) + `acp_context` (87) + 提示词 (168) | **486** |
+| Lean `billion-context-pi-lean@0.2.3` | `compress` (231) + `acp_context` (87) + 提示词 (168) | **486** |
 | 上游 `billion-context-pi@0.1.83`，开 `promptPack: "lean"` | `compress` (389) + `decompress` (271) + `search_context` (90) + `acp_status` (227) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + 提示词 (1,819) | **4,877** |
 | 上游 `billion-context-pi@0.1.83` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + 提示词 (4,945) | **8,670** |
 
@@ -99,8 +102,6 @@ pi install npm:billion-context-pi-lean
 | Context threshold（上下文阈值） | 上下文占到模型窗口的这个比例以上，压缩提醒不再等 Nudge interval：只要能腾出的空间达到 Minimum benefit 就提醒。调低让上下文常保小；调高允许它更满。它不是硬上限。 | 75% |
 | Nudge interval（提醒间隔） | 上下文没到 Context threshold 时，要等可压缩的旧内容攒到大约这么多 token 才提醒一次。调大：提醒少，每次压得多；调小：频繁小压缩，上下文更精简。 | 50K |
 | Minimum benefit（最小收益） | 能腾出的空间少于这个值时不提醒，也不做空闲压缩：只为几千 token 去重写、打断缓存不划算。 | 5K 与窗口 1% 中较大者 |
-| Tool output cap（工具输出上限） | 单个工具结果超过这个大小就截断，并告诉模型完整输出在哪。Pi 自带的 bash、read 本来就有 50KB 上限，这一项主要兜住 MCP 和其它扩展的工具，它们可能一次返回几百 KB。`off` 表示不截。 | 50K 字节 |
-| bash default timeout（bash 默认超时） | 模型没给超时时间时，bash 命令最多跑多少秒。Pi 自己没有默认超时，命令卡住会让会话一直干等；超时后会提示模型用更大的 timeout 重跑。`off` 表示不限时。 | 60 |
 | Debug log（调试日志） | 在 `~/.pi/acp.log` 里额外记录详细事件，排查问题用。错误和主要事件始终会记。 | `off` |
 
 Context threshold、Nudge interval、Minimum benefit 跟模型的窗口和价格有关，所以面板只为**当前模型**设置它们；要改别的模型，先切换过去。选 `inherit`（继承）会去掉这个模型自己的值，改用 `acp.json` 里 provider 级或全局的值，都没有就用默认值。
@@ -124,7 +125,7 @@ Context threshold、Nudge interval、Minimum benefit 跟模型的窗口和价格
 - **按 provider 设置**：三项压缩时机设置除了按模型，也能对整个 provider 或全局设置（[写法](CONFIGURATION.zh-CN.md#compressproviders--按-provider--按-model-覆盖)）。
 - **面板没有的选项**，比如 `compress.emergencyThresholdPercent`。完整列表见 [CONFIGURATION.zh-CN.md](CONFIGURATION.zh-CN.md)，以下几项除外：`autoUpdate` 和 `ACP_AUTO_UPDATE` 已移除（用 `pi install` 更新）；已移除的委派配置（`delegate.*`、`displayUsage`、`delegatePrompt`）会被忽略；`promptSections.*` 会被忽略并提示一次，因为本分支注入自己的提示词。
 
-面板设置对应的键：Summary model 是 `compressionModelId`，Idle compact 是 `idleCompact.enabled`，Idle minutes 是 `idleCompact.idleMinutes`，Tool output cap 是 `toolOutputMaxBytes`，bash default timeout 是 `toolBashDefaultTimeout`，Debug log 是 `debug`。
+面板设置对应的键：Summary model 是 `compressionModelId`，Idle compact 是 `idleCompact.enabled`，Idle minutes 是 `idleCompact.idleMinutes`，Debug log 是 `debug`。
 
 `/acp compact <provider/model>` 也能在命令行设置摘要模型（`/acp compact` 查看当前设置，`reset` 改回主模型）。
 

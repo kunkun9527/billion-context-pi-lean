@@ -1,48 +1,14 @@
 import { createHash } from "node:crypto";
 import {
   isBashToolResult,
-  isToolCallEventType,
   type ExtensionAPI,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_TOOL_BASH_TIMEOUT, DEFAULT_TOOL_OUTPUT_MAX_BYTES, resolveRepetitionGuard } from "./config.js";
+import { resolveRepetitionGuard } from "./config.js";
 import { debug, logInfo, logWarn } from "./log.js";
 import type { AcpRuntime } from "./runtime.js";
 
 type ContentPart = ToolResultEvent["content"][number];
-
-export function resolveBashTimeout(
-  input: { timeout?: number },
-  defaultTimeout: number | undefined,
-): number | undefined {
-  if (input.timeout !== undefined) return undefined;
-  const d = defaultTimeout ?? DEFAULT_TOOL_BASH_TIMEOUT;
-  if (!Number.isFinite(d) || d <= 0) return undefined;
-  return d;
-}
-
-export function capToolOutput(
-  content: ToolResultEvent["content"],
-  maxBytes: number | undefined,
-  fullPath?: string,
-): ToolResultEvent["content"] | undefined {
-  const max = maxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
-  if (!Number.isFinite(max) || max <= 0) return undefined;
-  const kept: ContentPart[] = [];
-  const texts: string[] = [];
-  for (const c of content) {
-    if (c.type === "text") texts.push((c as { text: string }).text);
-    else kept.push(c);
-  }
-  if (texts.length === 0) return undefined;
-  const combined = texts.join("\n");
-  const total = Buffer.byteLength(combined, "utf8");
-  if (total <= max) return undefined;
-  const head = keepHead(combined, max);
-  const dropped = total - Buffer.byteLength(head, "utf8");
-  kept.push({ type: "text", text: head + buildCapNotice(dropped, max, fullPath) } as ContentPart);
-  return kept;
-}
 
 const TIMEOUT_RE = /Command timed out after (\d+) seconds/;
 
@@ -78,35 +44,9 @@ export function appendTimeoutNotice(
   return appendTrailingText(content, buildTimeoutNotice(secs));
 }
 
-function keepHead(str: string, maxBytes: number): string {
-  const buf = Buffer.from(str, "utf8");
-  if (buf.length <= maxBytes) return str;
-  let end = maxBytes;
-  while (end > 0) {
-    const b = buf[end];
-    if (b === undefined || (b & 0xc0) !== 0x80) break;
-    end--;
-  }
-  let head = buf.subarray(0, end).toString("utf8");
-  const nl = head.lastIndexOf("\n");
-  if (nl >= Math.floor(maxBytes / 2)) head = head.slice(0, nl);
-  return head;
-}
-
-function buildCapNotice(dropped: number, maxBytes: number, fullPath?: string): string {
-  const where = fullPath
-    ? `Full output saved to: ${fullPath} — read it to see everything.`
-    : "To see more, narrow the query or redirect output to a file and read the relevant slice.";
-  return `\n\n[ACP guardrail: output capped at ${formatBytes(maxBytes)} (~${formatBytes(dropped)} dropped). ${where}]`;
-}
-
 function buildTimeoutNotice(secs: number): string {
   const suggested = Math.min(Math.max(Math.ceil(secs * 2), 120), 3600);
   return `\n\n[ACP guardrail: command killed after ${secs}s. To give it more time, re-run the bash tool with a larger \`timeout\` argument (e.g. \`"timeout": ${suggested}\`).]`;
-}
-
-function formatBytes(n: number): string {
-  return n >= 1024 ? `${(n / 1024).toFixed(1)}KB` : `${n}B`;
 }
 
 // --- Generic tool-call repetition guard (issue #308) ---
@@ -187,13 +127,6 @@ export function wireToolGuardrails(pi: ExtensionAPI, runtime: AcpRuntime): void 
   const pendingWarns = new Map<string, number>();
 
   pi.on("tool_call", (event, ctx) => {
-    if (isToolCallEventType("bash", event)) {
-      const t = resolveBashTimeout(event.input, runtime.adapter.toolBashDefaultTimeout);
-      if (t !== undefined) {
-        event.input.timeout = t;
-        debug.event("guardrail-bash-timeout", { applied: t });
-      }
-    }
     const cfg = resolveRepetitionGuard(runtime.adapter);
     if (!cfg.enabled) return;
     const sid = ctx.sessionManager.getSessionId();
@@ -223,21 +156,10 @@ export function wireToolGuardrails(pi: ExtensionAPI, runtime: AcpRuntime): void 
 
   pi.on("tool_result", (event) => {
     const isBash = isBashToolResult(event);
-    const fullPath = isBash ? event.details?.fullOutputPath : undefined;
     const timeoutSecs =
       isBash && event.isError ? detectBashTimeout(event.content) : undefined;
 
     let modified: ToolResultEvent["content"] | undefined;
-    // Unset must mean the documented 50KB default (CONFIGURATION.md), not
-    // "no cap"; only an explicit 0/negative disables. capToolOutput applies
-    // the same fallback internally, but resolving it here keeps logs accurate.
-    const max = runtime.adapter.toolOutputMaxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
-    const next = capToolOutput(event.content, max, fullPath);
-    if (next) {
-      modified = next;
-      debug.event("guardrail-output-cap", { max, hadPath: !!fullPath });
-      logWarn("guardrail", { event: "output-cap", max, hadPath: !!fullPath });
-    }
 
     if (timeoutSecs !== undefined) {
       modified = appendTimeoutNotice(modified ?? event.content, timeoutSecs);

@@ -31,6 +31,15 @@ export declare function isCustomMessageEntry(entry: TurnBoundaryEntry): entry is
     type: "custom_message";
 };
 export declare function entriesToCoreMessages(entries: SessionEntry[]): CoreMessage[];
+/** Apply Pi `context_edit` entries the way Pi's own buildSessionProjection does
+ *  (projectContextEntry): `replacement: null` omits the target from model
+ *  context, otherwise only its content is replaced (assistant/toolResult string
+ *  content becomes one text part). `buildContextEntries()` returns the raw path,
+ *  so without this the rebuild re-sends attempts Pi omitted (auto-retry's
+ *  _omitRecoveryAttempt) and ignores content replacements. The edit entries
+ *  themselves stay in the array (they project to nothing) so callers can see
+ *  where an edit happened. Returns `entries` itself when there is no edit. */
+export declare function applyContextEdits(entries: SessionEntry[]): SessionEntry[];
 /** Append-only incremental cache for entriesToCoreMessages (issue #561).
  *
  *  Projection is a pure prefix-stable function: each entry contributes a fixed
@@ -42,7 +51,8 @@ export declare function entriesToCoreMessages(entries: SessionEntry[]): CoreMess
  *    - count only ever GROWS (a drop = host rewind/truncate → full reproject),
  *    - the first and last cached boundary entries still carry the same ids
  *      (canaries against in-place rewrites the count check cannot see),
- *    - at most MAX_INCREMENTAL_ENTRIES new entries per turn.
+ *    - at most MAX_INCREMENTAL_ENTRIES new entries per turn,
+ *    - no new `context_edit` entry (it rewrites an EARLIER entry's contribution).
  *  Any doubt → full entriesToCoreMessages, identical result, just slower. */
 export declare class EntryProjectionCache {
     private count;
