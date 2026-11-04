@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-HDNA4HMC.js";
+} from "./chunk-X6IPX427.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -6617,27 +6617,27 @@ function parseCallText(text) {
     return null;
   }
   if (!parsed || typeof parsed !== "object") return null;
-  const obj2 = parsed;
+  const obj3 = parsed;
   let content = null;
   let contentWasString = false;
-  if (Array.isArray(obj2.content)) {
-    content = obj2.content;
-  } else if (typeof obj2.content === "string") {
+  if (Array.isArray(obj3.content)) {
+    content = obj3.content;
+  } else if (typeof obj3.content === "string") {
     contentWasString = true;
     try {
-      const inner = JSON.parse(obj2.content);
+      const inner = JSON.parse(obj3.content);
       if (Array.isArray(inner)) content = inner;
     } catch {
       content = null;
     }
   }
   if (!content || content.length === 0) return null;
-  return { prefix: raw.slice(0, start), obj: obj2, content, contentWasString };
+  return { prefix: raw.slice(0, start), obj: obj3, content, contentWasString };
 }
 function rewriteCompressText(text, liveKeys) {
   const parsed = parseCallText(text);
   if (!parsed) return null;
-  const { prefix, obj: obj2, content, contentWasString } = parsed;
+  const { prefix, obj: obj3, content, contentWasString } = parsed;
   const kept = content.filter((entry) => {
     if (!entry || typeof entry !== "object") return false;
     const e = entry;
@@ -6646,7 +6646,7 @@ function rewriteCompressText(text, liveKeys) {
     return liveKeys.has(rangeKey(s, end));
   });
   if (kept.length === 0) return null;
-  return prefix + serializeCompacted(obj2, kept, contentWasString).text;
+  return prefix + serializeCompacted(obj3, kept, contentWasString).text;
 }
 var SUMMARY_STUB_CHARS = 200;
 function compactEntry(entry) {
@@ -6659,7 +6659,7 @@ function compactEntry(entry) {
     summary: `${clampPrefix(e.summary, SUMMARY_STUB_CHARS - 1)}\u2026`
   };
 }
-function serializeCompacted(obj2, content, contentWasString) {
+function serializeCompacted(obj3, content, contentWasString) {
   let changed = false;
   const compacted = content.map((entry) => {
     const out = compactEntry(entry);
@@ -6667,14 +6667,14 @@ function serializeCompacted(obj2, content, contentWasString) {
     return out;
   });
   const outContent = contentWasString ? JSON.stringify(compacted) : compacted;
-  return { text: JSON.stringify({ ...obj2, content: outContent }), changed };
+  return { text: JSON.stringify({ ...obj3, content: outContent }), changed };
 }
 function compactCompressText(text) {
   const parsed = parseCallText(text);
   if (!parsed) return null;
-  const { prefix, obj: obj2, content, contentWasString } = parsed;
+  const { prefix, obj: obj3, content, contentWasString } = parsed;
   const { text: out, changed } = serializeCompacted(
-    obj2,
+    obj3,
     content,
     contentWasString
   );
@@ -11325,9 +11325,9 @@ function parseObjectValue(value, callId, diag) {
     salvaged = parsed.salvaged;
     if (parsed.quoteRepaired) diag.quoteSalvage = true;
   } else if (content !== null && typeof content === "object") {
-    const obj2 = content;
-    const nested = obj2["ranges"];
-    entries = Array.isArray(nested) ? nested : [obj2];
+    const obj3 = content;
+    const nested = obj3["ranges"];
+    entries = Array.isArray(nested) ? nested : [obj3];
     diag.contentSalvage = true;
   } else {
     diag.kind = "content-not-array";
@@ -18571,13 +18571,13 @@ function withBlockSummaries(args, owned) {
     if (block) entries.push({ ...r, summary: block.summary });
   }
   if (entries.length === 0) return null;
-  const obj2 = args;
+  const obj3 = args;
   const next = {};
-  for (const [key, value] of Object.entries(obj2)) {
+  for (const [key, value] of Object.entries(obj3)) {
     if (key !== "content" && !RANGE_KEYS.includes(key)) next[key] = value;
   }
-  next.content = typeof obj2.content === "string" ? JSON.stringify(entries) : entries;
-  return safeJson(next) === safeJson(obj2) ? null : next;
+  next.content = typeof obj3.content === "string" ? JSON.stringify(entries) : entries;
+  return safeJson(next) === safeJson(obj3) ? null : next;
 }
 function safeJson(value) {
   try {
@@ -21272,6 +21272,183 @@ function applyStripImages(body, api, settings2) {
   return { body: result.body, removed: result.removed };
 }
 
+// src/fold-anchor-cache.ts
+var obj = (x2) => x2 && typeof x2 === "object" && !Array.isArray(x2) ? x2 : void 0;
+function foldAnchorMessageIds(original, processed, blocks, limit, accept) {
+  const active = blocks.filter((b2) => b2.active && b2.effectiveMessageIds.length > 0);
+  const byBase = /* @__PURE__ */ new Map();
+  active.forEach((b2, i) => {
+    for (const id of b2.effectiveMessageIds) {
+      const base = baseIdOf(id);
+      byBase.set(base, [...byBase.get(base) ?? [], i]);
+    }
+  });
+  const visible = new Set(processed.map((m2) => m2.id));
+  const anchors = /* @__PURE__ */ new Map();
+  let last;
+  for (const m2 of original) {
+    if (visible.has(m2.id)) {
+      if (accept(m2)) last = m2.id;
+    } else {
+      for (const i of byBase.get(baseIdOf(m2.id)) ?? []) if (!anchors.has(i)) anchors.set(i, last);
+    }
+  }
+  const all = [];
+  for (const { i } of active.map((b2, i2) => ({ i: i2, createdAt: b2.createdAt })).sort((a, b2) => b2.createdAt - a.createdAt || b2.i - a.i)) {
+    const id = anchors.get(i);
+    if (id !== void 0 && !all.includes(id)) all.push(id);
+  }
+  if (all.length <= limit) return all;
+  const oldest = limit > 2 ? 2 : 0;
+  return [...all.slice(0, limit - oldest), ...oldest ? all.slice(-oldest) : []];
+}
+function foldAnchorPolicy(api, origin) {
+  if (process.env.BILI_NO_CACHE_CONTROL || !origin) return;
+  let host;
+  try {
+    host = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return;
+  }
+  const within = (domain) => host === domain || host.endsWith(`.${domain}`);
+  if (api === "anthropic-messages" && (within("anthropic.com") || within("githubcopilot.com"))) return "anthropic";
+  if (api === "openai-responses" && within("githubcopilot.com")) return "responses";
+  return;
+}
+function prepareFoldAnchors(original, processed, blocks, refs, originals, wire, model) {
+  const byId = new Map(original.map((m2) => [m2.id, m2]));
+  const idsByRaw = /* @__PURE__ */ new Map();
+  const rawsById = /* @__PURE__ */ new Map();
+  const callCounts = /* @__PURE__ */ new Map();
+  for (const m2 of original) {
+    if (m2.role !== "assistant" || m2.contentType !== "tool-call" || !m2.toolCallId) continue;
+    callCounts.set(m2.toolCallId, (callCounts.get(m2.toolCallId) ?? 0) + 1);
+    const source = obj(originals.get(baseIdOf(m2.id)));
+    if (!source) continue;
+    const same = source.provider === model.provider && source.api === model.api && source.model === model.id;
+    let id = m2.toolCallId;
+    if (!same) {
+      if (wire === "anthropic") id = normalizeIdPart(id, false);
+      else if (["openai", "openai-codex", "opencode"].includes(model.provider ?? "") && id.includes("|")) {
+        id = normalizeIdPart(id.split("|")[0], true);
+      } else id = normalizeIdPart(id, true);
+    }
+    if (wire === "responses") id = id.split("|")[0];
+    if (!id) continue;
+    if (!idsByRaw.has(m2.toolCallId)) idsByRaw.set(m2.toolCallId, /* @__PURE__ */ new Set());
+    idsByRaw.get(m2.toolCallId).add(id);
+    if (!rawsById.has(id)) rawsById.set(id, /* @__PURE__ */ new Set());
+    rawsById.get(id).add(m2.toolCallId);
+  }
+  const identity = (m2) => {
+    if (wire === "responses" && m2.role !== "user" && m2.contentType !== "tool-result") return;
+    if (m2.contentType === "tool-call" || m2.contentType === "tool-result") {
+      const ids2 = m2.toolCallId && idsByRaw.get(m2.toolCallId);
+      if (!ids2 || ids2.size !== 1 || callCounts.get(m2.toolCallId) !== 1) return;
+      const callId = ids2.values().next().value;
+      if (rawsById.get(callId)?.size !== 1) return;
+      const ref2 = m2.contentType === "tool-result" ? refs[m2.id] : void 0;
+      if (m2.contentType === "tool-result" && !ref2) return;
+      return { role: m2.role, callId, ...ref2 ? { ref: ref2 } : {} };
+    }
+    if (m2.contentType !== "text" || m2.role !== "user" && m2.role !== "assistant") return;
+    const originalMessage = obj(originals.get(baseIdOf(m2.id)));
+    const content = originalMessage?.content;
+    const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.map(obj).filter((b2) => b2?.type === "text" && typeof b2.text === "string" && b2.text.trim()).map((b2) => b2.text) : [];
+    const ref = m2.role === "user" ? refs[m2.id] : void 0;
+    const text = texts.at(-1);
+    return ref || text ? { role: m2.role, ref, text } : void 0;
+  };
+  const newest = blocks.reduce((best, b2) => b2.active && b2.effectiveMessageIds.length > 0 && (!best || b2.createdAt >= best.createdAt) ? b2 : best, void 0);
+  const selected = wire === "anthropic" ? newest ? [newest] : [] : blocks;
+  const ids = foldAnchorMessageIds(original, processed, selected, wire === "anthropic" ? 1 : 40, (m2) => !!identity(m2));
+  return ids.map((id) => identity(byId.get(id))).filter((a) => !!a);
+}
+function normalizeIdPart(id, responses) {
+  const normalized = id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+  return responses ? normalized.replace(/_+$/, "") : normalized;
+}
+function textMatches(value, anchor) {
+  if (typeof value !== "string") return false;
+  if (anchor.ref) {
+    const escaped = anchor.ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:<acp\\s[^>]*>${escaped}</acp>|\\[${escaped}\\])`).test(value);
+  }
+  return !!anchor.text && value === anchor.text;
+}
+function applyFoldAnchors(payload, wire, anchors) {
+  const body = obj(payload);
+  if (!body || anchors.length === 0) return;
+  const field = wire === "anthropic" ? "messages" : "input";
+  const items = body[field];
+  if (!Array.isArray(items)) return;
+  let out = items;
+  let mark = { type: "ephemeral" };
+  if (wire === "anthropic") {
+    const marks2 = [];
+    const scan = (v2) => {
+      if (Array.isArray(v2)) {
+        for (const x2 of v2) scan(x2);
+        return;
+      }
+      const o = obj(v2);
+      if (!o) return;
+      if (o.cache_control !== void 0) marks2.push(o.cache_control);
+      for (const [k2, x2] of Object.entries(o)) if (k2 !== "cache_control") scan(x2);
+    };
+    scan(body);
+    if (marks2.length >= 4) return;
+    const ttls = marks2.map((m2) => obj(m2)?.ttl);
+    if (marks2.some((m2) => obj(m2)?.type !== "ephemeral") || ttls.some((ttl) => ttl !== void 0 && ttl !== "5m" && ttl !== "1h")) return;
+    const long = ttls.some((ttl) => ttl === "1h");
+    if (long && ttls.some((ttl) => ttl !== "1h")) return;
+    if (long) mark = { type: "ephemeral", ttl: "1h" };
+  }
+  for (const anchor of anchors) {
+    const matches = [];
+    for (let i = 0; i < out.length; i++) {
+      const item2 = obj(out[i]);
+      if (!item2) continue;
+      if (wire === "responses") {
+        const isTool = item2.type === "function_call_output" && anchor.role === "tool" && anchor.callId && item2.call_id === anchor.callId;
+        const isUser = item2.role === "user" && (item2.type === void 0 || item2.type === "message") && anchor.role === "user";
+        if (!isTool && !isUser) continue;
+        const value2 = item2[isTool ? "output" : "content"];
+        const parts2 = typeof value2 === "string" ? [{ type: "input_text", text: value2 }] : Array.isArray(value2) ? value2 : [];
+        if ((isUser || anchor.ref) && !parts2.some((p) => textMatches(obj(p)?.text, anchor))) continue;
+        let last = -1;
+        for (let j2 = 0; j2 < parts2.length; j2++) if (obj(parts2[j2])?.type === "input_text") last = j2;
+        if (last >= 0) matches.push({ item: i, part: last });
+      } else {
+        if (item2.role !== (anchor.role === "tool" ? "user" : anchor.role)) continue;
+        const parts2 = typeof item2.content === "string" ? [{ type: "text", text: item2.content }] : Array.isArray(item2.content) ? item2.content : [];
+        for (let j2 = 0; j2 < parts2.length; j2++) {
+          const part2 = obj(parts2[j2]);
+          if (!part2) continue;
+          const toolContent = typeof part2.content === "string" ? [{ text: part2.content }] : Array.isArray(part2.content) ? part2.content : [];
+          const call = anchor.callId && (anchor.role === "tool" && part2.type === "tool_result" && part2.tool_use_id === anchor.callId && (!anchor.ref || toolContent.some((p) => textMatches(obj(p)?.text, anchor))) || anchor.role === "assistant" && part2.type === "tool_use" && part2.id === anchor.callId);
+          if (call || !anchor.callId && part2.type === "text" && textMatches(part2.text, anchor)) matches.push({ item: i, part: j2 });
+        }
+      }
+    }
+    if (matches.length !== 1) continue;
+    const { item: index, part: partIndex } = matches[0];
+    const item = obj(out[index]);
+    const key = wire === "responses" && item.type === "function_call_output" ? "output" : "content";
+    const value = item[key];
+    const parts = typeof value === "string" ? [{ type: wire === "responses" ? "input_text" : "text", text: value }] : Array.isArray(value) ? value : [];
+    const part = obj(parts[partIndex]);
+    const marker = wire === "anthropic" ? "cache_control" : "prompt_cache_breakpoint";
+    if (!part || part[marker] !== void 0) continue;
+    const replacement = [...parts];
+    replacement[partIndex] = { ...part, [marker]: wire === "anthropic" ? mark : { mode: "explicit" } };
+    out = [...out];
+    out[index] = { ...item, [key]: replacement };
+    if (wire === "anthropic") break;
+  }
+  return out === items ? void 0 : { ...body, [field]: out };
+}
+
 // src/tool-guardrails.ts
 import { createHash as createHash4 } from "crypto";
 import {
@@ -21589,7 +21766,7 @@ var k = (n) => n % 1e3 === 0 ? `${n / 1e3}K` : String(n);
 var parseK = (v2) => v2.endsWith("K") ? Number(v2.slice(0, -1)) * 1e3 : Number(v2);
 var pct2 = (n) => `${Math.round(n * 100)}%`;
 var withCurrent = (list, current) => list.includes(current) ? list : [...list, current];
-function obj(parent, key) {
+function obj2(parent, key) {
   const v2 = parent[key];
   if (v2 && typeof v2 === "object" && !Array.isArray(v2)) return v2;
   const fresh = {};
@@ -21608,14 +21785,14 @@ function prune2(raw, path10) {
 }
 function idleObject(raw) {
   if (raw.idleCompact === true) raw.idleCompact = { enabled: true };
-  return obj(raw, "idleCompact");
+  return obj2(raw, "idleCompact");
 }
 function modelPath(scope) {
   return ["compress", "providers", scope.provider, "models", scope.modelId];
 }
 function modelSettings(raw, scope) {
   let node = raw;
-  for (const key of modelPath(scope)) node = obj(node, key);
+  for (const key of modelPath(scope)) node = obj2(node, key);
   return node;
 }
 function modelValue(adapter, scope, key) {
@@ -21863,11 +22040,12 @@ function createAcpExtension(adapter = {}) {
       }
       return true;
     };
+    const foldAnchors = /* @__PURE__ */ new Map();
     wireCompactionDisable(pi, runtime);
-    wireSessionLifecycle(pi, runtime, standDownIfProxied);
-    wireBeforeProviderRequest(pi, runtime, standDownIfProxied);
+    wireSessionLifecycle(pi, runtime, standDownIfProxied, foldAnchors);
+    wireBeforeProviderRequest(pi, runtime, standDownIfProxied, foldAnchors);
     const idle = wireIdleCompact(pi, runtime);
-    wireContextTransform(pi, runtime, standDownIfProxied, idle);
+    wireContextTransform(pi, runtime, standDownIfProxied, foldAnchors, idle);
     wireSystemPrompt(pi, runtime);
     wireToolGuardrails(pi, runtime);
     wireOverflowSelfHeal(pi, runtime);
@@ -21918,8 +22096,9 @@ function wireCompactionDisable(pi, runtime) {
     return { cancel: true };
   });
 }
-function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
+function wireSessionLifecycle(pi, runtime, standDownIfProxied, snapshots) {
   pi.on("session_start", async (_event, ctx) => {
+    snapshots.delete(ctx.sessionManager.getSessionId());
     if (standDownIfProxied(ctx)) return;
     runtime.store.invalidate();
     runtime.clearNudgeTracking(ctx.sessionManager.getSessionId());
@@ -21952,6 +22131,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
   });
   pi.on("session_shutdown", (_event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
+    snapshots.delete(sid);
     runtime.clearDeadCompress(sid);
     runtime.dropLastSentMessages(sid);
     runtime.dropTokenScale(sid);
@@ -21968,27 +22148,30 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
   });
 }
 var lastDegNoticeKey = null;
-function wireBeforeProviderRequest(pi, runtime, standDownIfProxied) {
+function foldAnchorModelKey(model) {
+  return JSON.stringify([model?.api, model?.baseUrl, model?.provider, model?.id]);
+}
+function wireBeforeProviderRequest(pi, runtime, standDownIfProxied, snapshots) {
   pi.on("before_provider_request", async (event, ctx) => {
     if (runtime.refused) return;
     if (standDownIfProxied(ctx)) return;
+    const sid = ctx.sessionManager.getSessionId();
+    const model = ctx.model;
     const settings2 = runtime.stripImagesFor(ctx);
-    if (!settings2.enabled) return;
-    const outcome = applyStripImages(event.payload, ctx.model?.api, settings2);
+    const outcome = applyStripImages(event.payload, model?.api, settings2);
     if (outcome.removed > 0) {
-      logInfo("strip-images", {
-        sid: ctx.sessionManager.getSessionId(),
-        event: "stripped",
-        removed: outcome.removed,
-        keepRecent: settings2.keepRecent
-      });
-      return outcome.body;
+      logInfo("strip-images", { sid, event: "stripped", removed: outcome.removed, keepRecent: settings2.keepRecent });
     }
-    return;
+    const body = outcome.body ?? event.payload;
+    const snapshot = snapshots.get(sid);
+    const wire = foldAnchorPolicy(model?.api, model?.baseUrl);
+    const anchored = snapshot && wire === snapshot.wire && snapshot.model === foldAnchorModelKey(model) ? applyFoldAnchors(body, wire, snapshot.anchors) : void 0;
+    return anchored ?? outcome.body;
   });
 }
-function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
+function wireContextTransform(pi, runtime, standDownIfProxied, snapshots, idle) {
   pi.on("context", async (event, ctx) => {
+    snapshots.delete(ctx.sessionManager.getSessionId());
     if (runtime.refused) return;
     if (standDownIfProxied(ctx)) return;
     const sid = ctx.sessionManager.getSessionId();
@@ -22280,6 +22463,12 @@ ${rendered.text}${example}`);
         }
       }
       runtime.setLastSentMessages(sid, rebuilt);
+      const model = ctx.model;
+      const wire = foldAnchorPolicy(model?.api, model?.baseUrl);
+      if (wire && model) {
+        const anchors = prepareFoldAnchors(coreMessages, turn.messages, turn.state.blocks, turn.state.messageRefs.byRaw, originalById, wire, model);
+        if (anchors.length) snapshots.set(sid, { model: foldAnchorModelKey(model), wire, anchors });
+      }
       debug.event("context-out", { outMsgs: rebuilt.length, injected: turn.nudge?.shouldInject ?? false, emergency: turn.nudge?.breakdown?.emergencyOverride === 1 });
       return { messages: rebuilt };
     } catch (e) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Preserve more of the prompt cache across forward folds by adding breakpoints before folded ranges, ported from billion-context `b22a032`. Enabled only for Anthropic Messages on Anthropic and GitHub Copilot, and Responses on GitHub Copilot; existing markers and Anthropic's four-breakpoint/TTL limits are respected. Set `BILI_NO_CACHE_CONTROL=1` to disable these extra markers. Ambiguous or unsupported payloads are left unchanged.
+
 ## v0.2.3 (2026-10-23)
 
 - fix: no more false EMERGENCY after a failed request. Pi's auto-retry omits the failed attempt with a `context_edit`; Pi then stops trusting the last provider usage and `getContextUsage()` re-estimates its whole projection, which is the raw, unfolded history (641,881 tokens against a 54K sent view in one session). ACP used that number as a floor, so the meter showed 120–170% until the next successful reply. Host usage now floors, calibrates and feeds the overflow guard (context transform, `/acp` panel, `acp_status`) only when it is anchored on a valid assistant usage with no `context_edit` after it; otherwise ACP uses its sent-view estimate. The turn log marks such turns with `hostIgnored=estimate`.

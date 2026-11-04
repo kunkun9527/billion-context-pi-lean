@@ -15,4 +15,4 @@ export {
   SIDECAR_SCHEMA_VERSION,
   sidecarProducer
 };
-//# sourceMappingURL=chunk-HDNA4HMC.js.map
+//# sourceMappingURL=chunk-X6IPX427.js.map

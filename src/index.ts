@@ -30,6 +30,7 @@ import { countThinkingChars, dropCompressReasoning, keptCompressThinkingTokens }
 import { collapseAssistantDegeneration, degenerationNotice, lastAssistantRuns, resolveDegenerationGuard } from "./degeneration.js";
 import { buildAcpSystemPrompt } from "./system-prompt.js";
 import { applyStripImages } from "./strip-images.js";
+import { applyFoldAnchors, foldAnchorPolicy, prepareFoldAnchors } from "./fold-anchor-cache.js";
 import { wireToolGuardrails } from "./tool-guardrails.js";
 import { wireIdleCompact, type IdleCompactHandle } from "./idle-compact.js";
 import { makeConfigCommand } from "./config-panel.js";
@@ -106,13 +107,14 @@ export function createAcpExtension(adapter: AdapterConfig = {}): ExtensionFactor
       }
       return true;
     };
+    const foldAnchors: FoldAnchorSnapshots = new Map();
     wireCompactionDisable(pi, runtime);
-    wireSessionLifecycle(pi, runtime, standDownIfProxied);
-    wireBeforeProviderRequest(pi, runtime, standDownIfProxied);
+    wireSessionLifecycle(pi, runtime, standDownIfProxied, foldAnchors);
+    wireBeforeProviderRequest(pi, runtime, standDownIfProxied, foldAnchors);
     // After the strip-images hook so its before_provider_request handler stays
     // first; wireContextTransform registers only "context", so moving it is safe.
     const idle = wireIdleCompact(pi, runtime);
-    wireContextTransform(pi, runtime, standDownIfProxied, idle);
+    wireContextTransform(pi, runtime, standDownIfProxied, foldAnchors, idle);
     wireSystemPrompt(pi, runtime);
     wireToolGuardrails(pi, runtime);
     wireOverflowSelfHeal(pi, runtime);
@@ -182,8 +184,9 @@ function wireCompactionDisable(pi: ExtensionAPI, runtime: AcpRuntime): void {
   });
 }
 
-function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, standDownIfProxied: (ctx: ExtensionContext) => boolean): void {
+function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, standDownIfProxied: (ctx: ExtensionContext) => boolean, snapshots: FoldAnchorSnapshots): void {
   pi.on("session_start", async (_event, ctx) => {
+    snapshots.delete(ctx.sessionManager.getSessionId());
     if (standDownIfProxied(ctx)) return;
     runtime.store.invalidate();
     runtime.clearNudgeTracking(ctx.sessionManager.getSessionId());
@@ -222,6 +225,7 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
   });
   pi.on("session_shutdown", (_event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
+    snapshots.delete(sid);
     runtime.clearDeadCompress(sid);
     runtime.dropLastSentMessages(sid);
     runtime.dropTokenScale(sid);
@@ -246,37 +250,38 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
 // other one-shot warn flags (standDownWarned).
 let lastDegNoticeKey: string | null = null;
 
-// Opt-in wire-level strip of historical image payloads (issue #321, kernel
-// #215). pi serializes the provider request body from the (already transformed)
-// messages and fires before_provider_request with the RAW payload right before
-// the HTTP call — the same wire point the billion-context proxy strips at. We
-// only touch the body when the policy is enabled AND something was actually
-// removed; returning undefined keeps pi's payload reference untouched.
-function wireBeforeProviderRequest(pi: ExtensionAPI, runtime: AcpRuntime, standDownIfProxied: (ctx: ExtensionContext) => boolean): void {
+// Pi serializes the transformed messages before this hook. Apply optional
+// image stripping, then add fold anchors only for validated provider wires.
+type FoldAnchorSnapshots = Map<string, { model: string; wire: "anthropic" | "responses"; anchors: ReturnType<typeof prepareFoldAnchors> }>;
+function foldAnchorModelKey(model: { api?: string; baseUrl?: string; provider?: string; id?: string } | undefined): string {
+  return JSON.stringify([model?.api, model?.baseUrl, model?.provider, model?.id]);
+}
+function wireBeforeProviderRequest(pi: ExtensionAPI, runtime: AcpRuntime, standDownIfProxied: (ctx: ExtensionContext) => boolean, snapshots: FoldAnchorSnapshots): void {
   pi.on("before_provider_request", async (event, ctx) => {
     if (runtime.refused) return;
     if (standDownIfProxied(ctx)) return;
+    const sid = ctx.sessionManager.getSessionId();
+    const model = ctx.model as { api?: string; baseUrl?: string; provider?: string; id?: string } | undefined;
     const settings = runtime.stripImagesFor(ctx);
-    if (!settings.enabled) return;
-    const outcome = applyStripImages(event.payload, (ctx.model as { api?: string } | undefined)?.api, settings);
+    const outcome = applyStripImages(event.payload, model?.api, settings);
     if (outcome.removed > 0) {
-      logInfo("strip-images", {
-        sid: ctx.sessionManager.getSessionId(),
-        event: "stripped",
-        removed: outcome.removed,
-        keepRecent: settings.keepRecent,
-      });
-      return outcome.body;
+      logInfo("strip-images", { sid, event: "stripped", removed: outcome.removed, keepRecent: settings.keepRecent });
     }
-    return;
+    const body = outcome.body ?? event.payload;
+    const snapshot = snapshots.get(sid);
+    const wire = foldAnchorPolicy(model?.api, model?.baseUrl);
+    const anchored = snapshot && wire === snapshot.wire && snapshot.model === foldAnchorModelKey(model)
+      ? applyFoldAnchors(body, wire, snapshot.anchors) : undefined;
+    return anchored ?? outcome.body;
   });
 }
 
 // The core integration: Pi's `context` event fires before every LLM call with the
 // messages about to be sent. We run acp-kernel's processTurn (prune + ref-tag +
 // nudge decision) and return the transformed AgentMessage[].
-function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIfProxied: (ctx: ExtensionContext) => boolean, idle?: IdleCompactHandle): void {
+function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIfProxied: (ctx: ExtensionContext) => boolean, snapshots: FoldAnchorSnapshots, idle?: IdleCompactHandle): void {
   pi.on("context", async (event, ctx) => {
+    snapshots.delete(ctx.sessionManager.getSessionId());
     // Stood down for the proxy: leave the context completely
     // untouched — no ref tags, no compression, no nudge. Returning undefined
     // makes pi send the original messages verbatim.
@@ -786,6 +791,12 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
     // tag applied, so there is no meaningful "no change" case to short-circuit.
     // Capture the provider-bound prefix for the `session` summary model (#241).
     runtime.setLastSentMessages(sid, rebuilt);
+    const model = ctx.model as { api?: string; baseUrl?: string; provider?: string; id?: string } | undefined;
+    const wire = foldAnchorPolicy(model?.api, model?.baseUrl);
+    if (wire && model) {
+      const anchors = prepareFoldAnchors(coreMessages, turn.messages, turn.state.blocks, turn.state.messageRefs.byRaw, originalById, wire, model);
+      if (anchors.length) snapshots.set(sid, { model: foldAnchorModelKey(model), wire, anchors });
+    }
     debug.event("context-out", { outMsgs: rebuilt.length, injected: turn.nudge?.shouldInject ?? false, emergency: turn.nudge?.breakdown?.emergencyOverride === 1 });
     return { messages: rebuilt };
     } catch (e) {

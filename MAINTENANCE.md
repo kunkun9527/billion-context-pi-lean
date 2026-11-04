@@ -37,6 +37,7 @@
 
 ### 请求改写链路
 
+- 折叠缓存锚点：手工移植 billion-context [`b22a032`](https://github.com/ranxianglei/billion-context/commit/b22a032d3eaa1c2787c50976455ba0a47039abd6)；`src/fold-anchor-cache.ts` 按活动块和实际隐藏的消息寻找折叠前最后一条可见消息，在 Pi 的 `before_provider_request` 对序列化请求加缓存断点。Anthropic 限 1 个、遵守已有的 4 个断点及 TTL；Copilot Responses 限 40 个并保留最早的两个。只允许上游验证过的域名，`BILI_NO_CACHE_CONTROL` 可关闭。Pi 的 wire 不带原始 entry id，使用 ref、工具调用 id 或唯一的原文匹配；无法唯一匹配时不改请求。代理接管、模型切换或没有有效上下文快照时不加断点；快照不写入会话。测试在 `tests/fold-anchor-cache.test.ts` 和 `tests/fold-anchor-integration.test.ts`。
 - 紧急截断生效：`patchRefTag` 对 assistant 文本和无 ref 标签的消息也同步内核的截断正文（以 `[truncated for context space]` 标记为准）。以前内核截掉了、出站却还是原文。
 - 最近一条用户消息不被紧急截断：`protectLatestUserMessage`（`src/messages.ts`）在 `processTurn` 后恢复它的原文，再把这部分预算交给内核截断器去截其他候选。仍然放不下时记 `latest-user-kept` 日志并提示一次。内核（0.0.98，上游 0.0.119 仍未修）本身不动。
 - 计量复用：`sentViewMeterMatches` 用活动块签名（块 id、覆盖数、runId、tier、摘要长度）和历史金丝雀（记录时的消息数、首尾 id，要求这一轮只是在后面追加），记录上一轮的原始估算，采用时加上这一轮的新增（`adoptedViewTokens`）；原始估算变小、分支切换、回退或就地 refold 都会重新测量。
