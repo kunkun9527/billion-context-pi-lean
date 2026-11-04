@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.5 (2026-11-04)
 
 - fix: emergency truncation never makes a message longer. A tool output just over the 2000+2000 keep window (4001–~4070 chars) used to come out longer than the original, inflating the context while reporting saved tokens; the keep window is now capped so every clip is strictly shorter, and too-small candidates stay verbatim. Large outputs keep the same 2000+2000 bytes. Ported from billion-context's kernel (#3935).
 - fix: `/acp-search` finds a term that occurs once in a block summary. The kernel search dropped every block scoring ≤ 0.1, and a single summary hit scores 0.04; results are now only ranked (#2158).
