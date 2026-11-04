@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- fix: emergency truncation never makes a message longer. A tool output just over the 2000+2000 keep window (4001–~4070 chars) used to come out longer than the original, inflating the context while reporting saved tokens; the keep window is now capped so every clip is strictly shorter, and too-small candidates stay verbatim. Large outputs keep the same 2000+2000 bytes. Ported from billion-context's kernel (#3935).
+- fix: `/acp-search` finds a term that occurs once in a block summary. The kernel search dropped every block scoring ≤ 0.1, and a single summary hit scores 0.04; results are now only ranked (#2158).
+- fix: `/acp-cache` fold economics judge payback on all post-fold requests seen so far, the same window as the saved-token figure, so the latest fold is evaluated instead of staying "unobserved". The old next-fold verdict is kept as `cadenceOk`; n* prints with two decimals (#2044).
+- CI: the kernel patch is applied with jsdiff instead of `git apply`, so it works on Windows CRLF checkouts and in the Docker E2E image (which has no git and now copies `patches/`). v0.2.4's npm package was not affected: it ships the already-patched dist.
+
 ## v0.2.4 (2026-11-04)
 
 - fix: a fold crossing an interior protected message ends before that boundary, so replies are not moved into a summary above the question they answer (billion-context #3953). Tail-only overlaps and tool-pair safety keep their existing behavior; dedicated-summary planning uses the same fold.

@@ -6573,17 +6573,27 @@ function truncateLargeToolOutputs(messages, tokenCount, config, countTokens, opt
       if (original.length <= opts.keepPrefixChars + opts.keepSuffixChars) {
         continue;
       }
-      const prefix = clampPrefix(original, opts.keepPrefixChars);
-      const suffix = clampWindow(
-        original,
-        original.length - opts.keepSuffixChars,
-        original.length
-      );
-      const replacement = `${prefix}
+      const marker = `
 
 ...${TRUNCATION_MARKER} \u2014 original ~${tokens} tokens]...
 
-${suffix}`;
+`;
+      const maxKeep = original.length - marker.length - 4;
+      if (maxKeep < 64) continue;
+      const keep = Math.min(
+        opts.keepPrefixChars + opts.keepSuffixChars,
+        maxKeep
+      );
+      const prefixKeep = Math.floor(keep / 2);
+      const suffixKeep = keep - prefixKeep;
+      const prefix = clampPrefix(original, prefixKeep);
+      const suffix = clampWindow(
+        original,
+        original.length - suffixKeep,
+        original.length
+      );
+      const replacement = `${prefix}${marker}${suffix}`;
+      if (replacement.length >= original.length) continue;
       replacements.set(candidate.id, replacement);
       truncatedCount++;
       remaining -= tokens - countTokens(replacement);
@@ -9196,7 +9206,7 @@ function createCore(ports = {}) {
   function search(query, state) {
     const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 0);
     if (terms.length === 0) return [];
-    const scored = activeBlocks(state).map((block) => ({ block, score: scoreRelevance(block, terms) })).filter((entry) => entry.score > 0.1).sort((left, right) => right.score - left.score);
+    const scored = activeBlocks(state).map((block) => ({ block, score: scoreRelevance(block, terms) })).filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score);
     return scored.map((entry) => entry.block);
   }
   function status(state, tokenCount, config) {
@@ -10719,7 +10729,8 @@ function computeFoldEconomics(f, price) {
   const oneTimeCostUnits = (w2 - r) * f.T + q2 * f.sigma - r * f.S;
   const perTurnSavingUnits = savingPerTurn * r;
   const breakevenTurns = perTurnSavingUnits > 0 ? Math.max(0, oneTimeCostUnits) / perTurnSavingUnits : null;
-  const paidBack = f.turnsToNextFold !== null && breakevenTurns !== null ? f.turnsToNextFold >= breakevenTurns : null;
+  const paidBack = breakevenTurns !== null ? f.requestsAfter >= breakevenTurns : null;
+  const cadenceOk = f.turnsToNextFold !== null && breakevenTurns !== null ? f.turnsToNextFold >= breakevenTurns : null;
   return {
     seq: f.seq,
     at: f.at,
@@ -10735,7 +10746,8 @@ function computeFoldEconomics(f, price) {
     oneTimeCostUnits: round1(oneTimeCostUnits),
     perTurnSavingUnits: round1(perTurnSavingUnits),
     breakevenTurns,
-    paidBack
+    paidBack,
+    cadenceOk
   };
 }
 function summarizeFoldEconomics(foldEcon) {
@@ -10941,7 +10953,7 @@ function formatCacheReportFull(report) {
       `  verdict: ${e.paidBackCount} paid back, ${e.notPaidBackCount} not paid back, ${e.unobservedCount} unobserved`
     );
     for (const f of report.folds) {
-      const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(1);
+      const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(2);
       const k2 = f.turnsToNextFold === null ? "\u2014" : String(f.turnsToNextFold);
       const verdict = f.paidBack === null ? "?" : f.paidBack ? "PAID BACK" : "NOT PAID BACK";
       const h = f.hPct === null ? "n/a" : `${f.hPct.toFixed(1)}%`;
@@ -11022,11 +11034,11 @@ function formatCacheReportSummary(report) {
     );
     if (e.notPaidBackCount > 0)
       out.push(
-        `  NOT PAID BACK = measured post-fold cadence never reached n* (end-of-session / back-to-back folds \u2014 one-time cost, not data loss)`
+        `  NOT PAID BACK = post-fold requests so far have not reached n* (early fold or session ended before payback \u2014 one-time cost, not data loss)`
       );
     if (report.folds.length <= SUMMARY_FOLD_TOPS * 2) {
       for (const f of report.folds) {
-        const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(1);
+        const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(2);
         const k2 = f.turnsToNextFold === null ? "\u2014" : String(f.turnsToNextFold);
         const h = f.hPct === null ? "n/a" : `${f.hPct.toFixed(1)}%`;
         out.push(

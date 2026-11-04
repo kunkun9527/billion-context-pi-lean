@@ -122,8 +122,8 @@ test("acp_cache attributes post-fold re-pay to the fold and prices it", async ()
   const foldLine = text.split("\n").find((l) => l.trim().startsWith("#1"))!;
   assert.ok(foldLine, "fold #1 line present");
   assert.match(foldLine, /T=1200/, "measured re-pay charged to the fold");
-  assert.match(foldLine, /n\*=[\d.]+ k=— → \?/, "last fold: breakeven computed, cadence unobserved");
-  assert.match(text, /verdict: 0 PAID BACK \/ 0 NOT PAID BACK \/ 1 unobserved/, "unobserved tally");
+  assert.match(foldLine, /n\*=\d+\.\d{2} k=— → NOT PAID BACK/, "last fold is evaluable (#2044): 1 post-fold request < n*");
+  assert.match(text, /verdict: 0 PAID BACK \/ 1 NOT PAID BACK \/ 0 unobserved/, "lifetime-window tally (#2044)");
   const itemLines = itemRows(text);
   // Summary mode lists anomalies + the latest request: req1 (hit 0%) and the
   // post-fold request (hit 0%, also latest). The 97.7% request is omitted.
@@ -134,7 +134,7 @@ test("acp_cache attributes post-fold re-pay to the fold and prices it", async ()
   const resFull = await api.tools.find((t: any) => t.name === "acp_cache")!.execute("tc2f", { detail: "full" }, undefined, undefined, ctx);
   const fullText = (resFull.content[0] as any).text as string;
   assert.equal(itemRows(fullText).length, 3, "detail:full lists every request");
-  assert.match(fullText, /verdict: 0 paid back, 0 not paid back, 1 unobserved/, "full keeps legacy fold table wording");
+  assert.match(fullText, /verdict: 0 paid back, 1 not paid back, 0 unobserved/, "full keeps legacy fold table wording");
 });
 
 test("/acp-cache command renders the same report via ui.notify fallback", async () => {

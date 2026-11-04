@@ -1,7 +1,27 @@
+diff --git a/node_modules/acp-kernel/dist/cache-report.d.ts b/node_modules/acp-kernel/dist/cache-report.d.ts
+--- a/node_modules/acp-kernel/dist/cache-report.d.ts
++++ b/node_modules/acp-kernel/dist/cache-report.d.ts
+@@ -119,9 +119,14 @@ export interface FoldEconomics {
+     perTurnSavingUnits: number;
+     /** Breakeven turns n* = max(0,oneTimeCost)/perTurnSaving; null when S ≤ σ. */
+     breakevenTurns: number | null;
+-    /** paidBack: measured cadence reached the breakeven point.
+-     *  null while unobservable (no post-fold request yet / S ≤ σ). */
++    /** paidBack: lifetime payback verdict — post-fold requests observed so far
++     *  (requestsAfter) reached the breakeven point n*. Same window as
++     *  savedSoFar (billion-context#2044). null while unobservable (S ≤ σ). */
+     paidBack: boolean | null;
++    /** cadenceOk: the short-window verdict — turns until the NEXT fold
++     *  reached n*. Interleave-cadence diagnostic, not a payback verdict;
++     *  null while there is no next fold. */
++    cadenceOk: boolean | null;
+ }
+ export interface EconomicsSummary {
+     folds: number;
 diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dist/index.js
 --- a/node_modules/acp-kernel/dist/index.js
 +++ b/node_modules/acp-kernel/dist/index.js
-@@ -386,6 +386,7 @@
+@@ -386,6 +386,7 @@ function syncBlocks(messages, state) {
      rules: (state.rules ?? []).map((rule) => ({ ...rule })),
      nextRuleId: state.nextRuleId,
      terminalStreak: state.terminalStreak,
@@ -9,16 +29,51 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
      nextBlockId: state.nextBlockId,
      nextRunId: state.nextRunId
    };
-@@ -423,6 +424,8 @@
-   }
+@@ -424,6 +425,8 @@ function syncBlocks(messages, state) {
    return { state: result, deactivated };
  }
-+
-+import { createHash as leanCreateHash } from "node:crypto";
  
++import { createHash as leanCreateHash } from "node:crypto";
++
  // src/config.ts
  function defaultConfig(modelContextLimit, overrides = {}) {
-@@ -5068,6 +5071,8 @@
+   const base = {
+@@ -2293,17 +2296,27 @@ function truncateLargeToolOutputs(messages, tokenCount, config, countTokens, opt
+       if (original.length <= opts.keepPrefixChars + opts.keepSuffixChars) {
+         continue;
+       }
+-      const prefix = clampPrefix(original, opts.keepPrefixChars);
++      const marker = `
++
++...${TRUNCATION_MARKER} \u2014 original ~${tokens} tokens]...
++
++`;
++      const maxKeep = original.length - marker.length - 4;
++      if (maxKeep < 64) continue;
++      const keep = Math.min(
++        opts.keepPrefixChars + opts.keepSuffixChars,
++        maxKeep
++      );
++      const prefixKeep = Math.floor(keep / 2);
++      const suffixKeep = keep - prefixKeep;
++      const prefix = clampPrefix(original, prefixKeep);
+       const suffix = clampWindow(
+         original,
+-        original.length - opts.keepSuffixChars,
++        original.length - suffixKeep,
+         original.length
+       );
+-      const replacement = `${prefix}
+-
+-...${TRUNCATION_MARKER} \u2014 original ~${tokens} tokens]...
+-
+-${suffix}`;
++      const replacement = `${prefix}${marker}${suffix}`;
++      if (replacement.length >= original.length) continue;
+       replacements.set(candidate.id, replacement);
+       truncatedCount++;
+       remaining -= tokens - countTokens(replacement);
+@@ -5068,6 +5081,8 @@ function createCore(ports = {}) {
        state.nudge.lastNudgeShownTokens = 0;
        state.nudge.lastShownByTier = {};
        state.terminalStreak = 0;
@@ -27,7 +82,16 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
      }
      return {
        state,
-@@ -5347,17 +5352,35 @@
+@@ -5123,7 +5138,7 @@ function createCore(ports = {}) {
+   function search(query, state) {
+     const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 0);
+     if (terms.length === 0) return [];
+-    const scored = activeBlocks(state).map((block) => ({ block, score: scoreRelevance(block, terms) })).filter((entry) => entry.score > 0.1).sort((left, right) => right.score - left.score);
++    const scored = activeBlocks(state).map((block) => ({ block, score: scoreRelevance(block, terms) })).filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score);
+     return scored.map((entry) => entry.block);
+   }
+   function status(state, tokenCount, config) {
+@@ -5347,17 +5362,35 @@ var nudgeNode = {
      };
    }
  };
@@ -66,7 +130,7 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
        ctx.config,
        ctx.countTokens,
        {
-@@ -5369,7 +5392,8 @@
+@@ -5369,7 +5402,8 @@ var emergencyTruncateNode = {
      const minBenefit = nudge?.breakdown.minPressureBenefit ?? 0;
      const maxPending = nudge?.breakdown.maxPending ?? 0;
      const noViableCompression = nudge !== void 0 && (minBenefit > 0 ? maxPending < minBenefit : maxPending <= 0);
@@ -76,7 +140,7 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
      const streak = stuck ? prevStreak + 1 : 0;
      const escapeAfter = ctx.config.truncate.terminalEscapeAfter ?? 3;
      const triggered = stuck && escapeAfter > 0 && streak >= escapeAfter;
-@@ -5389,10 +5413,22 @@
+@@ -5389,10 +5423,22 @@ var emergencyTruncateNode = {
          stuckEvents: streak
        };
      }
@@ -100,7 +164,7 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
        effects
      };
    }
-@@ -5491,6 +5527,34 @@
+@@ -5491,6 +5537,34 @@ function applySingleRange(input) {
    }) : [];
    if (hitProtectedRaw.length > 0) {
      const protectedSet = new Set(hitProtectedRaw);
@@ -135,7 +199,7 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
      filteredIds = filteredIds.filter((id) => !protectedSet.has(id));
      for (const id of hitProtectedRaw) effectiveMessageIds.delete(id);
      const hitRefs = hitProtectedRaw.map((id) => input.state.messageRefs.byRaw[id]).filter((v) => typeof v === "string");
-@@ -5505,7 +5569,8 @@
+@@ -5505,7 +5579,8 @@ function applySingleRange(input) {
      warnings.push(
        `Excluded ${hitProtectedRaw.length} protected message(s) ${hitRefs.join(
          ", "
@@ -145,7 +209,7 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
      );
    }
    {
-@@ -5924,6 +5989,7 @@
+@@ -5924,6 +5999,7 @@ function cloneState(state) {
      rules: (state.rules ?? []).map((rule) => ({ ...rule })),
      nextRuleId: state.nextRuleId,
      terminalStreak: state.terminalStreak,
@@ -153,10 +217,53 @@ diff --git a/node_modules/acp-kernel/dist/index.js b/node_modules/acp-kernel/dis
      nextBlockId: state.nextBlockId,
      nextRunId: state.nextRunId,
      hiddenOrphanRefs: state.hiddenOrphanRefs ? [...state.hiddenOrphanRefs] : void 0
+@@ -6626,7 +6702,8 @@ function computeFoldEconomics(f, price) {
+   const oneTimeCostUnits = (w - r) * f.T + q * f.sigma - r * f.S;
+   const perTurnSavingUnits = savingPerTurn * r;
+   const breakevenTurns = perTurnSavingUnits > 0 ? Math.max(0, oneTimeCostUnits) / perTurnSavingUnits : null;
+-  const paidBack = f.turnsToNextFold !== null && breakevenTurns !== null ? f.turnsToNextFold >= breakevenTurns : null;
++  const paidBack = breakevenTurns !== null ? f.requestsAfter >= breakevenTurns : null;
++  const cadenceOk = f.turnsToNextFold !== null && breakevenTurns !== null ? f.turnsToNextFold >= breakevenTurns : null;
+   return {
+     seq: f.seq,
+     at: f.at,
+@@ -6642,7 +6719,8 @@ function computeFoldEconomics(f, price) {
+     oneTimeCostUnits: round1(oneTimeCostUnits),
+     perTurnSavingUnits: round1(perTurnSavingUnits),
+     breakevenTurns,
+-    paidBack
++    paidBack,
++    cadenceOk
+   };
+ }
+ function summarizeFoldEconomics(foldEcon) {
+@@ -6848,7 +6926,7 @@ function formatCacheReportFull(report) {
+       `  verdict: ${e.paidBackCount} paid back, ${e.notPaidBackCount} not paid back, ${e.unobservedCount} unobserved`
+     );
+     for (const f of report.folds) {
+-      const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(1);
++      const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(2);
+       const k = f.turnsToNextFold === null ? "\u2014" : String(f.turnsToNextFold);
+       const verdict = f.paidBack === null ? "?" : f.paidBack ? "PAID BACK" : "NOT PAID BACK";
+       const h = f.hPct === null ? "n/a" : `${f.hPct.toFixed(1)}%`;
+@@ -6929,11 +7007,11 @@ function formatCacheReportSummary(report) {
+     );
+     if (e.notPaidBackCount > 0)
+       out.push(
+-        `  NOT PAID BACK = measured post-fold cadence never reached n* (end-of-session / back-to-back folds \u2014 one-time cost, not data loss)`
++        `  NOT PAID BACK = post-fold requests so far have not reached n* (early fold or session ended before payback \u2014 one-time cost, not data loss)`
+       );
+     if (report.folds.length <= SUMMARY_FOLD_TOPS * 2) {
+       for (const f of report.folds) {
+-        const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(1);
++        const nstar = f.breakevenTurns === null ? "n/a" : f.breakevenTurns.toFixed(2);
+         const k = f.turnsToNextFold === null ? "\u2014" : String(f.turnsToNextFold);
+         const h = f.hPct === null ? "n/a" : `${f.hPct.toFixed(1)}%`;
+         out.push(
 diff --git a/node_modules/acp-kernel/dist/types.d.ts b/node_modules/acp-kernel/dist/types.d.ts
 --- a/node_modules/acp-kernel/dist/types.d.ts
 +++ b/node_modules/acp-kernel/dist/types.d.ts
-@@ -222,6 +222,8 @@
+@@ -222,6 +222,8 @@ export interface CcrConfig {
      retrieveInlineTokens?: number;
  }
  export interface CompressionState {

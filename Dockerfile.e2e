@@ -24,6 +24,7 @@ RUN npm ci
 COPY tsup.config.ts tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY patches ./patches
 RUN npm run build
 
 # Default entrypoint: run every scenario. Pass a substring arg to filter.

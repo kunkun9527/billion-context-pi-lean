@@ -41,8 +41,9 @@
 - 紧急截断参考上游 #3939，但不能照搬按 ref 缓存：本版 ref 按 raw id 复用，正文编辑后仍不变。缓存改用 raw id 加 SHA-256（角色、内容类型、工具名、调用 id、原始正文）；`BLOCKED` 共用 ref 也不会串内容。每轮先回放匹配的 clip，再从截断预算扣除已节省 token；低于阈值也回放。终止检测不能把已回收至阈值下的请求误判为无路可退。发送视图计量探针必须关闭 clip 回放，带 clip 的真实输出不可复用为下一轮截断前读数，避免重复扣除节省量。
 - `emergencyTruncateLatch` 是可选 sidecar 字段，最多 128 条；旧 sidecar 无需迁移，非法记录不恢复。sync/clone 保留它，消息消失或原文改变则淘汰，成功压缩只淘汰已被活动块覆盖的 clip，不相关压缩及失败/拒绝均不清空其余 clip。只有 clip、没有块的状态也能恢复和由父会话继承；实际回放仍按当前分支消息逐条核对。sidecar 丢失时不会从日志猜测旧 clip，而是重新判断截断。
 - context 钩子先执行 `protectLatestUserMessage`，再由 `rememberEmergencyTruncation` 记录最终正文并保存；最新用户的中间截断不能落盘，其替代候选的截断必须保留。指纹 tuple 与 patch 中实现必须同步修改。
-- 开发机需 Git：`scripts/patch-kernel.mjs` 在 typecheck/test/build 的前置钩子中用标准 `git apply` 应用补丁。补丁前/后的两个文件都做 SHA-256 校验，重复执行无操作；依赖文件异常则中止，不猜测兼容。直接运行单个测试前先执行 `node scripts/patch-kernel.mjs`。运行时由 tsup 打包补丁后的内核，不增加运行时依赖或安装钩子。升级依赖时必须重新核对补丁、哈希和回归，不能只改版本号。
-- 回归：`tests/kernel-boundary.test.ts`、`tests/truncation-stability.test.ts`、`tests/lean-fold-regressions.test.ts`，包含真实 context/compress、专用摘要 dry-run、恢复/分叉、context_edit、最新用户、BLOCKED 身份和终止检测。
+- 另从上游内核 0.0.180 移植三项小修复（取舍依据见 2026-11-04 代码级对照）：#3935 截断结果必须严格短于原文（`54bb967c`）；#2158 `core.search` 去掉 0.1 相关度门槛，`/acp-search` 走此路径（`057d3a69`）；#2044 缓存回本判定改用 `requestsAfter`，旧短窗口判定保留为 `cadenceOk`（`2a324f5d`）。不移植整批回滚 #3003：与“成功范围照常折叠”及重试熔断策略冲突。回归在 `tests/kernel-backports.test.ts`。
+- `scripts/patch-kernel.mjs` 在 typecheck/test/build 的前置钩子中用 `diff`（jsdiff，devDependency）应用补丁，不依赖 git，CRLF 检出也能应用（`.gitattributes` 另将 `patches/**` 设为 `-text`）。Docker E2E 镜像需 `COPY patches`。补丁涉及的每个文件都做前/后 SHA-256 校验，全部通过才写入，重复执行无操作；依赖文件异常则中止，不猜测兼容。改补丁时：用 `npm pack acp-kernel@0.0.101` 取原始文件，放在 `a/node_modules/acp-kernel/dist/`，修改后的放在 `b/...`，执行 `git diff --no-index --no-prefix a b` 生成，并更新脚本中的哈希。直接运行单个测试前先执行 `node scripts/patch-kernel.mjs`。运行时由 tsup 打包补丁后的内核，不增加运行时依赖或安装钩子。升级依赖时必须重新核对补丁、哈希和回归，不能只改版本号。
+- 回归：`tests/kernel-backports.test.ts`、`tests/kernel-boundary.test.ts`、`tests/truncation-stability.test.ts`、`tests/lean-fold-regressions.test.ts`，包含真实 context/compress、专用摘要 dry-run、恢复/分叉、context_edit、最新用户、BLOCKED 身份和终止检测。
 
 ### 请求改写链路
 

@@ -1,2 +1,3 @@
 tests/fixtures/** -text
 dist/** text eol=lf linguist-generated=true
+patches/** -text

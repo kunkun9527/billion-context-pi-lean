@@ -83,6 +83,7 @@
 		"@types/node": "^26.1.2",
 		"acp-kernel": "0.0.101",
 		"billion-context-pi": "0.1.83",
+		"diff": "8.0.4",
 		"tsup": "^8.5.1",
 		"tsx": "^4.23.1",
 		"typescript": "^7.0.2"
