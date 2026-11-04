@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.4 (2026-11-04)
+
+- fix: a fold crossing an interior protected message ends before that boundary, so replies are not moved into a summary above the question they answer (billion-context #3953). Tail-only overlaps and tool-pair safety keep their existing behavior; dedicated-summary planning uses the same fold.
+- fix: emergency-truncated history stays byte-identical when pressure drops. Clips are bound to raw message identity and original-content SHA-256, persisted across resume/fork, retired after edits or branch removal, bounded to 128 records, and retired when the corresponding messages are folded. Unrelated folds preserve existing clips. The persisted view includes Lean's latest-user guard, never its discarded intermediate user clip. Replayed savings count toward truncation budget and terminal-floor detection.
+- Development: keep acp-kernel pinned to 0.0.101 and apply the reviewed local patch before typecheck, tests and builds. Published/runtime installations continue to use the bundled dist without Git or a patch step.
+
 ## v0.2.3 (2026-10-23)
 
 - fix: no more false EMERGENCY after a failed request. Pi's auto-retry omits the failed attempt with a `context_edit`; Pi then stops trusting the last provider usage and `getContextUsage()` re-estimates its whole projection, which is the raw, unfolded history (641,881 tokens against a 54K sent view in one session). ACP used that number as a floor, so the meter showed 120–170% until the next successful reply. Host usage now floors, calibrates and feeds the overflow guard (context transform, `/acp` panel, `acp_status`) only when it is anchored on a valid assistant usage with no `context_edit` after it; otherwise ACP uses its sent-view estimate. The turn log marks such turns with `hostIgnored=estimate`.

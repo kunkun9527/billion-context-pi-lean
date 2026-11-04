@@ -1,6 +1,6 @@
 {
 	"name": "billion-context-pi-lean",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"description": "Lean fork of billion-context-pi for Pi: long-session context compression with an optional cheap summary model — 486 initialization tokens, 94% fewer than the original.",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -43,6 +43,9 @@
 		"node": ">=20"
 	},
 	"scripts": {
+		"pretypecheck": "node scripts/patch-kernel.mjs",
+		"pretest": "node scripts/patch-kernel.mjs",
+		"prebuild": "node scripts/patch-kernel.mjs",
 		"test": "node --import tsx --import ./tests/support/isolate-env.ts --test tests/*.test.ts",
 		"typecheck": "tsc --noEmit",
 		"typecheck:lean": "tsc -p lean/tsconfig.json",

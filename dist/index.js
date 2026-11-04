@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-HDNA4HMC.js";
+} from "./chunk-7ZB2JP5K.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -4755,6 +4755,7 @@ function advanceSurvival(state, promotionThreshold) {
 }
 
 // node_modules/acp-kernel/dist/index.js
+import { createHash as leanCreateHash } from "crypto";
 import { createHash } from "crypto";
 import { join as join6 } from "path";
 import { readFileSync, readdirSync } from "fs";
@@ -5103,6 +5104,7 @@ function syncBlocks(messages, state) {
     rules: (state.rules ?? []).map((rule) => ({ ...rule })),
     nextRuleId: state.nextRuleId,
     terminalStreak: state.terminalStreak,
+    emergencyTruncateLatch: state.emergencyTruncateLatch?.map((entry) => ({ ...entry })),
     nextBlockId: state.nextBlockId,
     nextRunId: state.nextRunId
   };
@@ -9137,6 +9139,8 @@ function createCore(ports = {}) {
       state.nudge.lastNudgeShownTokens = 0;
       state.nudge.lastShownByTier = {};
       state.terminalStreak = 0;
+      const covered = new Set(state.blocks.filter((block) => block.active).flatMap((block) => block.effectiveMessageIds));
+      state.emergencyTruncateLatch = state.emergencyTruncateLatch?.filter((entry) => !covered.has(entry.id));
     }
     return {
       state,
@@ -9416,17 +9420,38 @@ var nudgeNode = {
     };
   }
 };
+function leanTruncateFingerprint(message) {
+  return leanCreateHash("sha256").update(JSON.stringify([
+    message.role,
+    message.contentType,
+    message.toolName,
+    message.toolCallId,
+    message.text ?? ""
+  ])).digest("hex");
+}
 var emergencyTruncateNode = {
   name: "emergency-truncate",
   run(io, ctx) {
     const usage = ctx.config.modelContextLimit > 0 ? ctx.tokenCount / ctx.config.modelContextLimit : 0;
     const prevStreak = io.state.terminalStreak ?? 0;
+    const stored = io.state.emergencyTruncateLatch ?? [];
+    const byId = new Map(stored.map((entry) => [entry.id, entry]));
+    const live = [];
+    let replaySaved = 0;
+    const messages = stored.length === 0 ? io.messages : io.messages.map((message) => {
+      const entry = byId.get(message.id);
+      if (!entry || entry.fingerprint !== leanTruncateFingerprint(message)) return message;
+      live.push(entry);
+      replaySaved += Math.max(0, ctx.countTokens(message.text ?? "") - ctx.countTokens(entry.text));
+      return { ...message, text: entry.text };
+    });
     if (usage < ctx.config.truncate.threshold) {
-      return prevStreak > 0 ? { ...io, state: { ...io.state, terminalStreak: 0 } } : io;
+      if (stored.length === 0 && prevStreak === 0) return io;
+      return { ...io, messages, state: { ...io.state, terminalStreak: 0, emergencyTruncateLatch: live.length > 0 ? live : void 0 } };
     }
     const trunc = truncateLargeToolOutputs(
-      io.messages,
-      ctx.tokenCount,
+      messages,
+      Math.max(0, ctx.tokenCount - replaySaved),
       ctx.config,
       ctx.countTokens,
       {
@@ -9438,7 +9463,8 @@ var emergencyTruncateNode = {
     const minBenefit = nudge?.breakdown.minPressureBenefit ?? 0;
     const maxPending = nudge?.breakdown.maxPending ?? 0;
     const noViableCompression = nudge !== void 0 && (minBenefit > 0 ? maxPending < minBenefit : maxPending <= 0);
-    const stuck = noViableCompression && trunc.savedTokens <= 0;
+    const stillAtWatermark = ctx.tokenCount - replaySaved >= ctx.config.truncate.threshold * ctx.config.modelContextLimit;
+    const stuck = noViableCompression && trunc.savedTokens <= 0 && stillAtWatermark;
     const streak = stuck ? prevStreak + 1 : 0;
     const escapeAfter = ctx.config.truncate.terminalEscapeAfter ?? 3;
     const triggered = stuck && escapeAfter > 0 && streak >= escapeAfter;
@@ -9458,10 +9484,22 @@ var emergencyTruncateNode = {
         stuckEvents: streak
       };
     }
+    const originals = new Map(io.messages.map((message) => [message.id, message]));
+    const replayed = new Map(messages.map((message) => [message.id, message.text]));
+    const clips = [];
+    for (const message of trunc.messages) {
+      if (message.text === replayed.get(message.id)) continue;
+      const original = originals.get(message.id);
+      if (original && message.text?.includes("[truncated for context space]")) {
+        clips.push({ id: message.id, fingerprint: leanTruncateFingerprint(original), text: message.text });
+      }
+    }
+    const replaced = new Set(clips.map((entry) => entry.id));
+    const next = [...live.filter((entry) => !replaced.has(entry.id)), ...clips].slice(-128);
     return {
       ...io,
       messages: trunc.messages,
-      state: { ...io.state, terminalStreak: streak },
+      state: { ...io.state, terminalStreak: streak, emergencyTruncateLatch: next.length > 0 ? next : void 0 },
       effects
     };
   }
@@ -9560,6 +9598,34 @@ function applySingleRange(input) {
   }) : [];
   if (hitProtectedRaw.length > 0) {
     const protectedSet = new Set(hitProtectedRaw);
+    const firstProtectedIdx = filteredIds.findIndex((id) => protectedSet.has(id));
+    let truncatedAfter = 0;
+    if (firstProtectedIdx > 0) {
+      const truncatable = filteredIds.length - firstProtectedIdx - hitProtectedRaw.length;
+      const pairByCallId = /* @__PURE__ */ new Map();
+      for (const m2 of input.messages) {
+        if (m2.contentType === "tool-call" || m2.contentType === "tool-result") {
+          const key = m2.toolCallId ?? m2.id;
+          const pair = pairByCallId.get(key) ?? ["", ""];
+          if (m2.contentType === "tool-call") pair[0] = m2.id;
+          else pair[1] = m2.id;
+          pairByCallId.set(key, pair);
+        }
+      }
+      const keptIds = filteredIds.slice(0, firstProtectedIdx);
+      const droppedIds = filteredIds.slice(firstProtectedIdx);
+      const strandsPair = keptIds.some((id) => {
+        const m2 = input.messages.find((x2) => x2.id === id);
+        if (!m2 || m2.contentType !== "tool-call" && m2.contentType !== "tool-result") return false;
+        const pair = pairByCallId.get(m2.toolCallId ?? m2.id);
+        return !!pair && pair.some((half) => half !== "" && half !== id && droppedIds.includes(half));
+      });
+      if (truncatable > 0 && !strandsPair) {
+        truncatedAfter = truncatable;
+        filteredIds = keptIds;
+        for (const id of droppedIds) effectiveMessageIds.delete(id);
+      }
+    }
     filteredIds = filteredIds.filter((id) => !protectedSet.has(id));
     for (const id of hitProtectedRaw) effectiveMessageIds.delete(id);
     const hitRefs = hitProtectedRaw.map((id) => input.state.messageRefs.byRaw[id]).filter((v2) => typeof v2 === "string");
@@ -9574,7 +9640,7 @@ function applySingleRange(input) {
     warnings.push(
       `Excluded ${hitProtectedRaw.length} protected message(s) ${hitRefs.join(
         ", "
-      )} from compression range (recent/last-user zone) \u2014 they stay visible outside the new block; do not target them in another compress call.`
+      )} from compression range (recent/last-user zone) \u2014 they stay visible outside the new block; do not target them in another compress call.` + (truncatedAfter > 0 ? ` Range truncated at that boundary \u2014 ${truncatedAfter} later message(s) stay visible too (#3953).` : "")
     );
   }
   {
@@ -9993,6 +10059,7 @@ function cloneState(state) {
     rules: (state.rules ?? []).map((rule) => ({ ...rule })),
     nextRuleId: state.nextRuleId,
     terminalStreak: state.terminalStreak,
+    emergencyTruncateLatch: state.emergencyTruncateLatch?.map((entry) => ({ ...entry })),
     nextBlockId: state.nextBlockId,
     nextRunId: state.nextRunId,
     hiddenOrphanRefs: state.hiddenOrphanRefs ? [...state.hiddenOrphanRefs] : void 0
@@ -12192,6 +12259,9 @@ function parsePercent(v2) {
   return Number(s);
 }
 
+// src/messages.ts
+import { createHash as createHash2 } from "crypto";
+
 // src/tag-tokens.ts
 function formatTokens3(tokens) {
   if (tokens < 1e3) return String(tokens);
@@ -12629,6 +12699,25 @@ function protectLatestUserMessage(inMessages, outMessages, config, tokenCount) {
   messages[at] = restored;
   return { messages, restoredId: latest.id, remainingTokens: pending - trunc.savedTokens };
 }
+function rememberEmergencyTruncation(inMessages, outMessages, state) {
+  const originals = new Map(inMessages.map((m2) => [m2.id, m2]));
+  const clips = [];
+  for (const out of outMessages) {
+    const original = originals.get(out.id);
+    if (!original) continue;
+    const text = truncatedCoreBody(out, original.text ?? "");
+    if (text === null) continue;
+    const fingerprint = createHash2("sha256").update(JSON.stringify([
+      original.role,
+      original.contentType,
+      original.toolName,
+      original.toolCallId,
+      original.text ?? ""
+    ])).digest("hex");
+    clips.push({ id: original.id, fingerprint, text });
+  }
+  state.emergencyTruncateLatch = clips.length > 0 ? clips.slice(-128) : void 0;
+}
 function rebuildBodyFromCore(original, coreBody, tag) {
   const base = original;
   const trimmed = coreBody.replace(/\s+$/, "");
@@ -12818,7 +12907,7 @@ var SessionStateStore = class {
           logWarn("state", { event: "load-failed", file, error: e instanceof Error ? e.message : String(e) });
         }
       }
-      if (state.blocks.length === 0 && sessionFile) {
+      if (state.blocks.length === 0 && !state.emergencyTruncateLatch?.length && sessionFile) {
         const parentState = await this.tryLoadParentState(sessionFile);
         if (parentState) state = parentState;
       }
@@ -12886,7 +12975,7 @@ var SessionStateStore = class {
       try {
         const raw = await fs4.readFile(parentAcp, "utf8");
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
+        if (parsed && Array.isArray(parsed.blocks) && (parsed.blocks.length > 0 || readTruncationLatch(parsed.emergencyTruncateLatch).length > 0)) {
           logInfo("state", { event: "inherited-parent-state", file: parentAcp, depth, blocks: parsed.blocks.length, tokensCompressed: parsed.stats?.tokensCompressed ?? 0 });
           return mergeInitialState(parsed);
         }
@@ -12903,6 +12992,12 @@ var SessionStateStore = class {
     return void 0;
   }
 };
+function readTruncationLatch(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry) => entry !== null && typeof entry === "object" && typeof entry.id === "string" && typeof entry.fingerprint === "string" && /^[a-f0-9]{64}$/.test(entry.fingerprint) && typeof entry.text === "string" && entry.text.includes("[truncated for context space]")
+  ).slice(-128);
+}
 function mergeInitialState(parsed) {
   const fresh = createInitialState();
   return {
@@ -12915,6 +13010,7 @@ function mergeInitialState(parsed) {
     rules: parsed.rules ?? fresh.rules,
     nextRuleId: parsed.nextRuleId ?? fresh.nextRuleId,
     ...parsed.terminalStreak !== void 0 ? { terminalStreak: parsed.terminalStreak } : {},
+    emergencyTruncateLatch: readTruncationLatch(parsed.emergencyTruncateLatch),
     nextBlockId: parsed.nextBlockId ?? fresh.nextBlockId,
     nextRunId: parsed.nextRunId ?? fresh.nextRunId
   };
@@ -17432,7 +17528,9 @@ function estimateTokens(messages, coveredIds, imageTokensById) {
 }
 function sentViewTokenCount(core, messages, state, config, prelim, imageTokensById, systemPromptTokens = 0) {
   const cap = config.modelContextLimit > 0 ? Math.max(0, Math.floor(config.truncate.threshold * config.modelContextLimit) - 1) : Number.MAX_SAFE_INTEGER;
-  const probe = core.processTurn({ messages, state: structuredClone(state), config, tokenCount: Math.min(prelim, cap) });
+  const probeState = structuredClone(state);
+  probeState.emergencyTruncateLatch = void 0;
+  const probe = core.processTurn({ messages, state: probeState, config, tokenCount: Math.min(prelim, cap) });
   const viewTokens = estimateTokens(probe.messages, collectCoveredMessageIds(probe.state), imageTokensById) + systemPromptTokens;
   return { viewTokens, drifted: Math.abs(viewTokens - prelim) > Math.max(1e3, 0.1 * prelim) };
 }
@@ -19418,7 +19516,7 @@ import { writeFile, mkdir } from "fs/promises";
 import { existsSync as existsSync2, lstatSync, readlinkSync, realpathSync } from "fs";
 import { resolve, relative, isAbsolute as isAbsolute2, join as join9, basename as basename2, dirname as dirname7 } from "path";
 import { tmpdir, homedir as homedir6 } from "os";
-import { createHash as createHash2 } from "crypto";
+import { createHash as createHash3 } from "crypto";
 var AUTO_DIR = join9(homedir6() || tmpdir(), ".cache", "pi", "acp-decompress");
 var PREVIEW_CHARS = 600;
 var MESSAGE_INLINE_THRESHOLD = 2e3;
@@ -19509,7 +19607,7 @@ function resolveToFilePath(targetPath) {
 function messageFileStem(ref) {
   if (/^[A-Za-z0-9._-]{1,80}$/.test(ref)) return `msg-${ref}`;
   const readable = ref.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40);
-  return `msg-${readable}-${createHash2("sha256").update(ref).digest("hex").slice(0, 10)}`;
+  return `msg-${readable}-${createHash3("sha256").update(ref).digest("hex").slice(0, 10)}`;
 }
 function autoFilePath(blockId) {
   return join9(AUTO_DIR, `${blockId}-${Date.now()}.txt`);
@@ -19799,7 +19897,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.2.3";
+    return "0.2.4";
   } catch {
     return "dev";
   }
@@ -20727,7 +20825,7 @@ async function statusReport(runtime, ctx) {
   const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
   const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
   const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, realTokens) });
-  const versionStr = "0.2.3" ? `billion-context-pi@${"0.2.3"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const versionStr = "0.2.4" ? `billion-context-pi@${"0.2.4"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -21091,9 +21189,9 @@ function degenerationNotice(runs) {
 }
 
 // node_modules/acp-kernel/dist/wire/index.js
-import { createHash as createHash3 } from "crypto";
+import { createHash as createHash4 } from "crypto";
 function hashId(s) {
-  return createHash3("sha256").update(s, "utf8").digest("hex").slice(0, 16);
+  return createHash4("sha256").update(s, "utf8").digest("hex").slice(0, 16);
 }
 function createSubagentNamespaces() {
   const anchors = /* @__PURE__ */ new Map();
@@ -21273,7 +21371,7 @@ function applyStripImages(body, api, settings2) {
 }
 
 // src/tool-guardrails.ts
-import { createHash as createHash4 } from "crypto";
+import { createHash as createHash5 } from "crypto";
 import {
   isBashToolResult
 } from "@earendil-works/pi-coding-agent";
@@ -21324,7 +21422,7 @@ function canonicalStringify(value) {
 function repetitionFingerprint(toolName, input) {
   const payload = `${toolName}\0${canonicalStringify(input ?? {})}`;
   try {
-    return createHash4("sha1").update(payload).digest("hex");
+    return createHash5("sha1").update(payload).digest("hex");
   } catch {
     return `unhashable:${toolName}`;
   }
@@ -21934,7 +22032,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     dropLiveOnlyTailCache(ctx.sessionManager.getSessionId());
     const sid = ctx.sessionManager.getSessionId();
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.2.3" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.2.4" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {
@@ -22084,7 +22182,6 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         activeBefore: state.blocks.filter((b2) => b2.active).length
       });
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
-      await runtime.save(turn.state, ctx);
       idle?.noteNudge(sid, turn.nudge);
       const userGuard = protectLatestUserMessage(coreMessages, turn.messages, config, tokenCount);
       if (userGuard.restoredId) {
@@ -22099,6 +22196,10 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
       } else {
         latestUserOverLimit.delete(sid);
       }
+      if (turn.state.emergencyTruncateLatch?.length || userGuard.restoredId) {
+        rememberEmergencyTruncation(coreMessages, turn.messages, turn.state);
+      }
+      await runtime.save(turn.state, ctx);
       const truncateBand = config.modelContextLimit > 0 ? Math.floor(config.truncate.threshold * config.modelContextLimit) : Number.MAX_SAFE_INTEGER;
       runtime.noteSentViewCount(sid, {
         viewTokens: estimateTokens(turn.messages, collectCoveredMessageIds(turn.state), imageTokens) + fixedTokens,
@@ -22106,7 +22207,7 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         blockSig: blockSignature(turn.state),
         history: historyCanary(coreMessages),
         limit: config.modelContextLimit,
-        usable: tokenCount < truncateBand
+        usable: tokenCount < truncateBand && !turn.state.emergencyTruncateLatch?.length
       });
       if (turn.terminalEscape) {
         if (runtime.noteTerminalEscape(sid, true)) {

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createAcpExtension as bundledExtension } from "../../dist/index.js";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { createJiti } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
 
@@ -473,6 +477,56 @@ test("real upstream registration exposes the intended two-tool surface", () => {
   const pi = createPi();
   extension(pi);
   assert.deepEqual(pi.tools.map((tool) => tool.name), ["compress", "acp_context"]);
+});
+
+const foldEntry = (id, role, text) => ({ type: "message", id, parentId: null, timestamp: "", message: { role, content: role === "user" ? text : [{ type: "text", text }], timestamp: 1, stopReason: "stop", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 } } });
+const foldText = m => typeof m?.content === "string" ? m.content : (m?.content ?? []).filter(b => b.type === "text").map(b => b.text).join("\n");
+function bundledHarness(entries, file) {
+  const pi = createPi();
+  createLeanAcpExtension(bundledExtension({ externalSystemPrompt: true, preserveRecentMessages: 1, coreOverrides: { preserveRecentTokens: 0 } }))(pi);
+  const ctx = { mode: "rpc", hasUI: false, cwd: process.cwd(), ui: { notify() {}, setStatus() {} }, model: { contextWindow: 100000, maxTokens: 1 }, sessionManager: { buildContextEntries: () => entries, getEntries: () => entries, getSessionId: () => file, getSessionFile: () => file } };
+  return { pi, ctx, context: async () => {
+    let event = { type: "context", messages: entries.map(e => e.message) };
+    for (const handler of pi.handlers.get("context") ?? []) { const out = await handler(event, ctx); if (out) event = { ...event, ...out }; }
+    return event.messages;
+  } };
+}
+
+test("bundled Lean compress preserves replies after an interior protected question", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lean-dist-boundary-"));
+  try {
+    const entries = Array.from({ length: 10 }, (_, i) => foldEntry(`p${i + 1}`, i + 1 > 7 ? "assistant" : i % 2 ? "assistant" : "user", `body ${i + 1} `.repeat(120)));
+    const file = join(dir, "session.jsonl");
+    const h = bundledHarness(entries, file);
+    await h.context();
+    const out = await getTool(h.pi, "compress").execute("fold", { content: [{ startId: "m00002", endId: "m00009", summary: "A detailed summary retaining the original findings, decisions and all pending work." }] }, undefined, undefined, h.ctx);
+    assert.match(foldText(out), /blocks: b\d+=/);
+    const state = JSON.parse(await readFile(`${file}.acp.json`, "utf8"));
+    assert.deepEqual(state.blocks[0].effectiveMessageIds, ["p2", "p3", "p4", "p5", "p6"]);
+    const visible = (await h.context()).map(foldText).join("\n");
+    for (const i of [7, 8, 9]) assert.ok(visible.includes(`body ${i} `));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("bundled Lean context keeps clips stable after an unrelated fold, pressure drop and restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lean-dist-truncate-"));
+  try {
+    const entries = [foldEntry("warm", "user", "start ".repeat(500)), foldEntry("warm-reply", "assistant", "reply ".repeat(500)), foldEntry("big", "assistant", "alpha-beta ".repeat(4000)), ...Array.from({ length: 10 }, (_, i) => foldEntry(`tail${i}`, i % 2 ? "assistant" : "user", `tail ${i}`))];
+    const file = join(dir, "session.jsonl");
+    const h = bundledHarness(entries, file);
+    let tokens = 96000;
+    h.ctx.getContextUsage = () => ({ tokens });
+    const clipped = (await h.context()).map(foldText).find(text => text.includes("alpha-beta"));
+    assert.match(clipped, /\[truncated for context space\]/);
+    tokens = 60000;
+    const folded = await getTool(h.pi, "compress").execute("unrelated-fold", { content: [{ startId: "m00001", endId: "m00002", summary: "A detailed summary retaining the warm-up findings, decisions and pending work." }] }, undefined, undefined, h.ctx);
+    assert.match(foldText(folded), /blocks: b\d+=/);
+    for (const current of [h, bundledHarness(entries, file)]) {
+      current.ctx.getContextUsage = () => ({ tokens });
+      const next = (await current.context()).map(foldText).find(text => text.includes("alpha-beta"));
+      assert.ok(next === clipped, "bundled output must match the original clip exactly");
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("provider-facing metadata stays within the lean budget", () => {

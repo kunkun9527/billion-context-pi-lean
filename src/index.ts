@@ -22,7 +22,7 @@ import { makeRuleTool } from "./rule-tool.js";
 import { makeCommands } from "./commands.js";
 import { mergeSurface, readToolSurfaceWithPacks, resolveActivePack, resolvePackName, surfaceMetaOf } from "./prompt-pack.js";
 import type { NudgeSectionsConfig } from "./surface.js";
-import { coreOutToAgentMessages, extractText, protectLatestUserMessage, ACP_NUDGE_CUSTOM_TYPE, type AcpNudgeRecord } from "./messages.js";
+import { coreOutToAgentMessages, extractText, protectLatestUserMessage, rememberEmergencyTruncation, ACP_NUDGE_CUSTOM_TYPE, type AcpNudgeRecord } from "./messages.js";
 import { liveOnlyTailCached, dropLiveOnlyTailCache } from "./live-only-tail.js";
 import { carryHostSystemMessages } from "./system-passthrough.js";
 import { sanitizeToolPairing } from "./tool-pair-sanitizer.js";
@@ -461,7 +461,6 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       });
 
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
-      await runtime.save(turn.state, ctx);
       idle?.noteNudge(sid, turn.nudge);
       // Lean: emergency truncation must not cut the latest user message,
       // which compression already treats as protected.
@@ -478,11 +477,17 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
         latestUserOverLimit.delete(sid);
       }
 
+      if (turn.state.emergencyTruncateLatch?.length || userGuard.restoredId) {
+        rememberEmergencyTruncation(coreMessages, turn.messages, turn.state);
+      }
+      await runtime.save(turn.state, ctx);
+
       // Issue #561: measure the EXACT view that just went out (turn.messages is
       // the pruned, summary-injected projection the provider receives) and
       // record it as next turn's recount source — this is what lets the probe
       // processTurn above stay on the resync-only path. Unusable when this turn
-      // ran in the truncate band (output may be post-truncation → under-reports).
+      // ran in the truncate band or replayed clips (both under-report the
+      // pre-truncation ruler the kernel needs for its remaining budget).
       const truncateBand = config.modelContextLimit > 0 ? Math.floor(config.truncate.threshold * config.modelContextLimit) : Number.MAX_SAFE_INTEGER;
       runtime.noteSentViewCount(sid, {
         viewTokens: estimateTokens(turn.messages, collectCoveredMessageIds(turn.state), imageTokens) + fixedTokens,
@@ -490,7 +495,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
         blockSig: blockSignature(turn.state),
         history: historyCanary(coreMessages),
         limit: config.modelContextLimit,
-        usable: tokenCount < truncateBand,
+        usable: tokenCount < truncateBand && !turn.state.emergencyTruncateLatch?.length,
       });
 
       // [#464] Surface the kernel's end-game observability signals: they fire

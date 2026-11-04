@@ -45,6 +45,8 @@ With **Idle compact** on, the same nudge is also shown once when you step away, 
 
 - Emergency truncation was computed but never reached the request.
 - Emergency truncation could cut the latest user message.
+- A fold crossing a protected question could move its replies into a summary above it.
+- Emergency-truncated history could expand again when pressure dropped; matching clips now survive resume/fork without replaying edited content.
 - The token meter reused an old count and ignored newly added messages.
 - Reasoning inside `compress` calls was not counted.
 - Concurrent state saves could fail (`ENOENT` on a shared temp file), and releasing the session lock could let a later caller jump the queue.

@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
-import { defaultCountTokens, truncateLargeToolOutputs, type Config, type CoreMessage } from "acp-kernel";
+import { defaultCountTokens, truncateLargeToolOutputs, type Config, type CoreMessage, type CompressionState } from "acp-kernel";
 import { rewriteTagTokens } from "./tag-tokens.js";
 import type { TurnBoundaryEntry } from "./turn-boundary.js";
 
@@ -621,6 +622,24 @@ export function protectLatestUserMessage(
   const messages = trunc.messages.slice();
   messages[at] = restored;
   return { messages, restoredId: latest.id, remainingTokens: pending - trunc.savedTokens };
+}
+
+/** Persist the final guarded view, not the kernel's intermediate truncation.
+ * Keep this fingerprint tuple in sync with the pinned kernel patch. */
+export function rememberEmergencyTruncation(inMessages: CoreMessage[], outMessages: CoreMessage[], state: CompressionState): void {
+  const originals = new Map(inMessages.map(m => [m.id, m]));
+  const clips: NonNullable<CompressionState["emergencyTruncateLatch"]> = [];
+  for (const out of outMessages) {
+    const original = originals.get(out.id);
+    if (!original) continue;
+    const text = truncatedCoreBody(out, original.text ?? "");
+    if (text === null) continue;
+    const fingerprint = createHash("sha256").update(JSON.stringify([
+      original.role, original.contentType, original.toolName, original.toolCallId, original.text ?? "",
+    ])).digest("hex");
+    clips.push({ id: original.id, fingerprint, text });
+  }
+  state.emergencyTruncateLatch = clips.length > 0 ? clips.slice(-128) : undefined;
 }
 
 function rebuildBodyFromCore(

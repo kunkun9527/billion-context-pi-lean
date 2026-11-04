@@ -35,6 +35,15 @@
 
 内核 `hideConsumedCompressCalls` 把保留下来的 compress 调用参数截成 200 字符存根（`SUMMARY_STUB_CHARS`），全文由 `acp_summary_` 消息承载，但 `coreOutToAgentMessages` 会跳过这些消息，主模型从来看不到块摘要，常在压缩后立刻解压刚建的块。`src/compress-tool.ts` 的 `inlineBlockSummaries` 在 `src/index.ts` 的 context 钩子里把活动块的完整当前摘要写回对应 compress 调用参数：参数用 `normalizeRanges` 解析，工具能接受的写法（裸对象字符串、`startRef/endRef`、顶层单范围、字符串形式的 content）都覆盖；按 startRef/endRef 匹配块，无 ref 的旧块在单范围调用里直接对应，没有活动块的范围被去掉。块摘要建好后不变，不会额外打断缓存；就地重折叠（refold）的块会在该位置改变一次。测试在 `tests/anchor-text-sync.test.ts`。
 
+### 固定内核的本地修复
+
+- 不升级 `acp-kernel@0.0.101`。`patches/acp-kernel-0.0.101.patch` 手工移植主上游 #3953（`7237cdcc`）的内部保护边界规则，保留范围头部、尾部和工具配对的原有行为。专用摘要 dry-run 与实际压缩、日志重建共用此内核。
+- 紧急截断参考上游 #3939，但不能照搬按 ref 缓存：本版 ref 按 raw id 复用，正文编辑后仍不变。缓存改用 raw id 加 SHA-256（角色、内容类型、工具名、调用 id、原始正文）；`BLOCKED` 共用 ref 也不会串内容。每轮先回放匹配的 clip，再从截断预算扣除已节省 token；低于阈值也回放。终止检测不能把已回收至阈值下的请求误判为无路可退。发送视图计量探针必须关闭 clip 回放，带 clip 的真实输出不可复用为下一轮截断前读数，避免重复扣除节省量。
+- `emergencyTruncateLatch` 是可选 sidecar 字段，最多 128 条；旧 sidecar 无需迁移，非法记录不恢复。sync/clone 保留它，消息消失或原文改变则淘汰，成功压缩只淘汰已被活动块覆盖的 clip，不相关压缩及失败/拒绝均不清空其余 clip。只有 clip、没有块的状态也能恢复和由父会话继承；实际回放仍按当前分支消息逐条核对。sidecar 丢失时不会从日志猜测旧 clip，而是重新判断截断。
+- context 钩子先执行 `protectLatestUserMessage`，再由 `rememberEmergencyTruncation` 记录最终正文并保存；最新用户的中间截断不能落盘，其替代候选的截断必须保留。指纹 tuple 与 patch 中实现必须同步修改。
+- 开发机需 Git：`scripts/patch-kernel.mjs` 在 typecheck/test/build 的前置钩子中用标准 `git apply` 应用补丁。补丁前/后的两个文件都做 SHA-256 校验，重复执行无操作；依赖文件异常则中止，不猜测兼容。直接运行单个测试前先执行 `node scripts/patch-kernel.mjs`。运行时由 tsup 打包补丁后的内核，不增加运行时依赖或安装钩子。升级依赖时必须重新核对补丁、哈希和回归，不能只改版本号。
+- 回归：`tests/kernel-boundary.test.ts`、`tests/truncation-stability.test.ts`、`tests/lean-fold-regressions.test.ts`，包含真实 context/compress、专用摘要 dry-run、恢复/分叉、context_edit、最新用户、BLOCKED 身份和终止检测。
+
 ### 请求改写链路
 
 - 紧急截断生效：`patchRefTag` 对 assistant 文本和无 ref 标签的消息也同步内核的截断正文（以 `[truncated for context space]` 标记为准）。以前内核截掉了、出站却还是原文。

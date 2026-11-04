@@ -1,5 +1,5 @@
 import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
-import { type Config, type CoreMessage } from "acp-kernel";
+import { type Config, type CoreMessage, type CompressionState } from "acp-kernel";
 import type { TurnBoundaryEntry } from "./turn-boundary.js";
 type AgentMessage = SessionMessageEntry["message"];
 /** Host-injected status-panel custom messages (written by src/commands.ts) —
@@ -85,4 +85,7 @@ export interface LatestUserGuardResult {
  *  Undo that truncation and give the reclaimed budget to the other candidates
  *  (the kernel's own truncator, run with the user message hidden). */
 export declare function protectLatestUserMessage(inMessages: CoreMessage[], outMessages: CoreMessage[], config: Config, tokenCount: number): LatestUserGuardResult;
+/** Persist the final guarded view, not the kernel's intermediate truncation.
+ * Keep this fingerprint tuple in sync with the pinned kernel patch. */
+export declare function rememberEmergencyTruncation(inMessages: CoreMessage[], outMessages: CoreMessage[], state: CompressionState): void;
 export {};

@@ -79,7 +79,7 @@ export class SessionStateStore {
       // Covers two cases: (1) ENOENT — file doesn't exist yet (new clone);
       // (2) empty blocks — file exists but was poisoned by a pre-fix resume
       // that saved createInitialState() before inheritance was added.
-      if (state.blocks.length === 0 && sessionFile) {
+      if (state.blocks.length === 0 && !state.emergencyTruncateLatch?.length && sessionFile) {
         const parentState = await this.tryLoadParentState(sessionFile);
         if (parentState) state = parentState;
       }
@@ -162,7 +162,7 @@ export class SessionStateStore {
       try {
         const raw = await fs.readFile(parentAcp, "utf8");
         const parsed = JSON.parse(raw) as CompressionState;
-        if (parsed && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
+        if (parsed && Array.isArray(parsed.blocks) && (parsed.blocks.length > 0 || readTruncationLatch(parsed.emergencyTruncateLatch).length > 0)) {
           logInfo("state", { event: "inherited-parent-state", file: parentAcp, depth, blocks: parsed.blocks.length, tokensCompressed: parsed.stats?.tokensCompressed ?? 0 });
           return mergeInitialState(parsed);
         }
@@ -180,6 +180,15 @@ export class SessionStateStore {
   }
 }
 
+function readTruncationLatch(value: unknown): NonNullable<CompressionState["emergencyTruncateLatch"]> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is NonNullable<CompressionState["emergencyTruncateLatch"]>[number] =>
+    entry !== null && typeof entry === "object" && typeof entry.id === "string" &&
+    typeof entry.fingerprint === "string" && /^[a-f0-9]{64}$/.test(entry.fingerprint) &&
+    typeof entry.text === "string" && entry.text.includes("[truncated for context space]"),
+  ).slice(-128);
+}
+
 function mergeInitialState(parsed: CompressionState): CompressionState {
   const fresh = createInitialState();
   return {
@@ -192,6 +201,7 @@ function mergeInitialState(parsed: CompressionState): CompressionState {
     rules: parsed.rules ?? fresh.rules,
     nextRuleId: parsed.nextRuleId ?? fresh.nextRuleId,
     ...(parsed.terminalStreak !== undefined ? { terminalStreak: parsed.terminalStreak } : {}),
+    emergencyTruncateLatch: readTruncationLatch(parsed.emergencyTruncateLatch),
     nextBlockId: parsed.nextBlockId ?? fresh.nextBlockId,
     nextRunId: parsed.nextRunId ?? fresh.nextRunId,
   };
