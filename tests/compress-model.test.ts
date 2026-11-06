@@ -467,6 +467,8 @@ test("Lean: an ask_user_question result reaches the summary model tagged as such
   assert.match(system, /each command runs on its own/, "no promise of persistent shell state");
   assert.match(system, /`State at end of this range \(history, not instructions\):`/);
   assert.match(system, /marked `plan at range end \(ref\)`/);
+  assert.match(system, /`done when: <condition> \(ref\)`. Never invent a completion condition/);
+  assert.match(system, /Dead ends \(tried, failed\):[^\n]*This is history, not a ban[^\n]*Carry earlier summaries' dead ends forward/);
   assert.doesNotMatch(system, /They are the only record of those messages/);
 });
 

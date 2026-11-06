@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Summary rules: each `Open objectives:` item keeps the user's request close to verbatim and, when the user stated or approved one, its completion condition as `done when: … (ref)`; the end-of-range state adds `Dead ends (tried, failed):` with the conditions each approach was tried under, carried forward across refolds until a later message shows it worked, its conditions changed or the user reversed the decision (history, not a ban on retrying). Motivated by "You don't need long context" (arXiv 2611.05306, Appendix A): the most accuracy-preserving compactions keep the task, the completion criteria and failed approaches.
+
 ## v0.2.5 (2026-11-04)
 
 - fix: emergency truncation never makes a message longer. A tool output just over the 2000+2000 keep window (4001–~4070 chars) used to come out longer than the original, inflating the context while reporting saved tokens; the keep window is now capped so every clip is strictly shorter, and too-small candidates stay verbatim. Large outputs keep the same 2000+2000 bytes. Ported from billion-context's kernel (#3935).
