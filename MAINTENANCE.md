@@ -10,6 +10,7 @@
 - Lean 外壳：`lean/index.ts`（测试 `lean/tests/facade.test.mjs`），通过 `../dist/index.js` 引用运行时；`package.json` 的 `pi.extensions` 指向它。
 - `dist/` 提交进仓库（`*.map` 除外）：Pi 用 git 安装时执行 `npm install --omit=dev`，不会 build，也装不到 tsup 和 kernel。jiti 只加载 `lean/index.ts`，不能直接加载 `src/`。CI 会检查提交的 `dist/` 与源码一致。
 - 移植来源：上游 PR #241（commits `631d51e`、`c5e7de8`，基于 0.1.52，无法直接 rebase）。
+- `scripts/replay/`：用本机会话离线回放增长提醒，比较不同 `nudgeGrowthTokens` 的成本、耗时和压缩次数；只读会话，不发布。模型、假设和 2026-11 的结果见其 README。
 
 ## 改动记录（相对上游 0.1.83）
 
