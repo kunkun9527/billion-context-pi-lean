@@ -14,7 +14,7 @@ This repository started as a fork of `billion-context-pi` v0.1.83 and is version
 - Run `npm run check` before committing; commit `dist/` together with the source change.
 - Running one test file directly needs `--import ./tests/support/isolate-env.ts`, otherwise it writes to the real `~/.pi/acp.log`.
 - Keep the resident prompt small: the facade's tool surface and prompt budget are asserted in `lean/tests/facade.test.mjs`. Grow them only with a measured reason.
-- Every model-visible fallback must stay meaningful: when the dedicated summary model fails, keep the main model's fallback summary; never store a placeholder.
+- Dedicated-model call failures leave that range uncompressed; successful ranges in the batch still fold. When configuration/host limitations or no extractable content make the adapter use the caller summary instead, it must be meaningful; never store a placeholder.
 - Upstream fixes are cherry-picked by hand (`git cherry-pick -x` when it applies) and noted in `MAINTENANCE.md`. Do not merge `upstream/master` wholesale.
 - Published to npm as `billion-context-pi-lean`. Versions follow semver independently of upstream (`0.2.0`, `0.2.1`, …). A release is one commit on `main`: tag `v<version>`, GitHub release, `npm publish`; steps in `MAINTENANCE.md`.
 - Record user-visible changes in `CHANGELOG.md` under the top Lean section.

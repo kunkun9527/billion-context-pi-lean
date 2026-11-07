@@ -16,8 +16,8 @@ export declare function hasCompressHistory(entries: SessionEntry[]): boolean;
 /**
  * Replay successful compress calls from the session log against `state`
  * (normally a fresh createInitialState()). Failed, errored, no-op and
- * unparseable calls are skipped — applyCompression batches are atomic, so a
- * rejected call leaves state untouched. `report.blocks` tells the caller
+ * unparseable calls are skipped. Partial successes replay their recorded
+ * applied ranges when available. `report.blocks` tells the caller
  * whether anything was actually rebuilt (state is returned unchanged when
  * nothing applied).
  */

@@ -13,9 +13,9 @@ import type { AcpRuntime } from "./runtime.js";
 import { MAX_COMPRESS_ATTEMPTS } from "./runtime.js";
 import { lastTurnBoundaryId } from "./turn-boundary.js";
 import { debug, logError, logInfo, logThrow, logWarn } from "./log.js";
-import { estimateTokens, collectCoveredMessageIds, collectImageTokens, modelSupportsImages, adjustedTokenCount } from "./tokens.js";
+import { estimateTokens, collectCoveredMessageIds, measureTurnInputs, adjustedTokenCount } from "./tokens.js";
 import { applyToolPromptOverrides, type ToolPromptOverrides } from "./surface.js";
-import { defaultCountTokens, parseCompressArgs, resolveBoundaries, viableRanges, formatRanges, type CompressionBlock, type CompressionState, type CompressParseDiagnostics, type CoreMessage, type NudgeDecision } from "acp-kernel";
+import { parseCompressArgs, resolveBoundaries, resolveBlockSpan, viableRanges, formatRanges, type CompressionBlock, type CompressionState, type CompressParseDiagnostics, type CoreMessage, type NudgeDecision } from "acp-kernel";
 import { countUnicodeEscapes, findUnverifiableUserQuote, sanitizeSummary } from "./summary-sanitize.js";
 import { assertNotAborted } from "./abort.js";
 import { PROXY_STAND_DOWN_MESSAGE } from "./proxy-detect.js";
@@ -511,18 +511,11 @@ async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: Exte
   if (ranges.length === 0) return "No ranges provided.";
   const { state: initialState, coreMessages, entries } = await runtime.stateFor(ctx);
   assertNotAborted(signal);
-  const config = runtime.configFor(ctx);
-  // Sent-view arbitration — the same scale as the context transform and
-  // acp_status (see src/index.ts): never the session-tree tokenCount.
-  const modelId = (ctx.model as { id?: string } | undefined)?.id ?? "default";
-  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
-  const sentTokens = estimateTokens(coreMessages, collectCoveredMessageIds(initialState), imageTokens) + systemPromptTokens;
-  // Same view-based recount as the context transform (issue #289): with blocks
-  // present, the raw-view count can sit far above the sent view and mis-scale
-  // this pass's emergency-truncate band before boundary resolution.
-  const firstTokenCount = adjustedTokenCount(runtime.core, coreMessages, initialState, config, sentTokens, imageTokens, systemPromptTokens);
+  const { config, imageTokens, fixedTokens, sentTokens } = measureTurnInputs(runtime, ctx, { state: initialState, coreMessages, entries });
+  const modelId = ctx.model?.id ?? "default";
+  // Preview uses the shared effective window and fixed overhead, but does not
+  // consume send-only overflow arms, calibration samples or meter records.
+  const firstTokenCount = adjustedTokenCount(runtime.core, coreMessages, initialState, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({
     messages: coreMessages,
     state: initialState,
@@ -629,15 +622,20 @@ async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: Exte
   }
   await runtime.save(applied.state, ctx);
   const { blocksCreated, tokensCompressed, errors, warnings } = applied.result;
-  // Record only the ranges that produced a new block: the kernel may reject
-  // some ranges of a batch, and rebuild replays the record as one batch.
-  const foldedRanges = finalRanges.filter((r) =>
-    applied.state.blocks.some((b) => !beforeRunIds.has(b.blockId) && b.startRef === r.startId && b.endRef === r.endId),
-  );
-  if (detailsOut && foldedRanges.length > 0 && dedicated.modelLabel !== undefined) {
+  if (detailsOut && changedBlocks.length > 0 && dedicated.modelLabel !== undefined) {
+    // One request can refold several blocks without changing their endpoints.
+    // Record actual changed blocks, excluding failed/skipped ranges entirely.
     detailsOut.acpFolded = {
       version: 1,
-      ranges: foldedRanges.map((r) => ({ startId: r.startId, endId: r.endId, summary: r.summary, ...((r.topic ?? topLevelTopic) ? { topic: r.topic ?? topLevelTopic } : {}) })),
+      ranges: changedBlocks.map((block) => {
+        // Refolds must replay with message refs: original block-boundary specs
+        // would create a new parent instead. The kernel only refolds blocks
+        // whose message span resolves; new blocks always retain their spec.
+        const span = beforeRunIds.has(block.blockId)
+          ? resolveBlockSpan(block, applied.state.messageRefs.byRaw)!
+          : { startRef: block.startRef!, endRef: block.endRef! };
+        return { startId: span.startRef, endId: span.endRef, summary: block.summary, ...(block.topic ? { topic: block.topic } : {}) };
+      }),
     };
   }
   if (blocksCreated > 0) {
@@ -657,7 +655,7 @@ async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: Exte
   // Post-compression count: feeding the stale pre-compression sentTokens would
   // mis-scale this pass's emergency-truncate band (threshold 0.95) and skew
   // afterTokens (issue #289).
-  const postSentTokens = adjustedTokenCount(runtime.core, coreMessages, applied.state, config, estimateTokens(coreMessages, collectCoveredMessageIds(applied.state), imageTokens) + systemPromptTokens, imageTokens, systemPromptTokens);
+  const postSentTokens = adjustedTokenCount(runtime.core, coreMessages, applied.state, config, estimateTokens(coreMessages, collectCoveredMessageIds(applied.state), imageTokens) + fixedTokens, imageTokens, fixedTokens);
   const afterTurn = runtime.core.processTurn({
     messages: coreMessages,
     state: applied.state,

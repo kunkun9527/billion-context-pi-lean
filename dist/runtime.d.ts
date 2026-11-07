@@ -10,6 +10,12 @@ import { OverflowEpisode } from "./overflow-selfheal.js";
 type AgentMessage = SessionMessageEntry["message"];
 export interface AcpRuntime {
     core: CompressionCore;
+    /** Startup clears turn-local tracking, not learned overflow windows. */
+    startSession(sid: string): void;
+    /** Shutdown releases session-scoped episodes/caches; pending locks drain normally. */
+    releaseSession(sid: string): void;
+    noteLatestUserOverLimit(sid: string, active: boolean): boolean;
+    noteDegenerationNotice(sid: string, signature: string): boolean;
     /** Set when the model's traffic routes through the billion-context wire
      *  proxy (#296), which then owns compression.
      *  Once true, the extension stands down: the context transform, system-prompt

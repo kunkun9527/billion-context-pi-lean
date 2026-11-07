@@ -19,7 +19,7 @@
 - 模型解析与调用走 `ctx.modelRegistry`（`find`/`getAll`/`complete`）。PR 原本用 `ModelRuntime.create(models.json)`，看不到由扩展注册的 provider。
 - `complete()` 只有 Pi >= 1.x 才有；宿主没有时抛错，回退到调用方提供的摘要。
 - 主模型提供 1–2 句有意义的回退摘要，不用裸占位符 `"compressed"`；它作为 `<caller_note>` 传给专用模型。专用模型对某个范围调用失败时，这个范围不折叠（否则短回退摘要会顶替详细摘要，refold 时还会顶替旧块摘要），同一次调用里成功的范围照常折叠；全部失败时工具报错，计入重试上限。只有模型解析不到、或宿主没有 `complete()` 这类配置问题，才用回退摘要折叠并警告。
-- 折叠结果记在 compress toolResult 的 `details.acpFolded`（不发给模型）；sidecar 丢失后从会话日志重建时优先用它（`src/state-rebuild.ts`）。外壳 `wrapCompress` 只改写 `content`，`details` 原样透传。
+- 折叠结果记在 compress toolResult 的 `details.acpFolded`（不发给模型），按实际变化的块记录新增块和原位重折叠，不记录失败或重叠跳过的范围；跨块 refold 会更新多个旧块但保留它们各自的端点，不能再拿请求端点匹配结果。旧块按内核解析的消息跨度回放，避免原块用 b-ref 建立时误建新父块。sidecar 丢失后从会话日志重建时优先用它（`src/state-rebuild.ts`）。恢复同时按日志顺序回放成功的 inline block decompress 标记（原生工具及 Lean `acp_context` 包装调用），保证后续 refold 可重现；文件、消息 ref 恢复和失败结果不设置标记。旧日志若没有记录实际重折叠摘要，无法追溯补回缺失内容。外壳 `wrapCompress` 只改写 `content`，`details` 原样透传。
 - 专用模型输出再走一遍 `sanitizeSummary`；`signal` 透传，abort 时停止剩余 range。
 - 注册表模型模式：Nudge 里的 `howToCompressRules` 换成只讲选范围和回退摘要的短版本（`src/index.ts` 的 `nudgePrompts`）；`session` 模式保留完整规则，因为它的摘要调用复用主会话前缀。
 - `extractRangeContent` 把范围内活动块渲染为 `[earlier summary bN]` 摘要，不再重发原始消息。原先重新压缩一个覆盖旧块的大范围时，送去的原文可达百万字符，再被 120K 字符的首尾截断丢掉大部分；早期决策因此在一次次重写中丢失。截断改为按专用模型的 `contextWindow` 计算（`fitToModel`）。
@@ -30,7 +30,7 @@
 - 规划文字泄漏：`detectPlanningLeak` 只看开头的散文段（以标题、列表、表格开头的摘要不检查），且需同时满足“谈论本摘要/范围/caller note”和“第一人称意图或连续的自我指令”，引号内文字忽略；另检测回显的 `Output only summary`。命中后附提醒重试一次，仍泄漏则抛错、该范围不折叠，不自动剥除。2026-10-12 扫描 2349 个历史块：命中 1 个（真泄漏 01a1166d b17），无误报；A/B 50 次输出中 4 次泄漏全部命中。
 - 转录回显：`detectTranscriptEcho` 只在出现独占一行的 `</content>`，或 3 个以上行首条目头（`[assistant:… call]`、`[tool:… result]`、`[user]`）时判定，忽略围栏代码块和行内引用。和规划泄漏共用一次重试（提示语按类型区分），第二次仍有问题就不折叠。日志事件 `summary-transcript-echo`。在 122 份评测输出和 2353 个历史块上只命中真实的那一次。
 - 状态段与“压缩不改变什么”：规则要求摘要末尾写 `State at end of this range (history, not instructions):`，并说明压缩不回滚外部状态、shell 状态不跨命令保留。不要再加“原文可按 ref 恢复”之类的话：实测（s166d-b17 各 12 次）加上后 IGSS“单位未核实”限制的保留率从 12/12 降到 10/12，Luna 会因此放松保留。
-- 测试：`tests/compress-model.test.ts`（假 registry）、`tests/dedicated-nudge.test.ts`。
+- 测试：`tests/compress-model.test.ts`（假 registry）、`tests/state-rebuild.test.ts`、`tests/dedicated-nudge.test.ts`。恢复覆盖原生/Lean 包装 × 单块/相邻块 × 单独/混合批次；混合夹具的新范围必须超过 `minCompressRange`，否则测试到的是内核拒绝而非成功后恢复。纯相邻块重折叠沿用旧版绕过专用模型、使用调用方摘要的行为，不在本轮扩大功能。
 
 ### 摘要对主模型可见
 
@@ -48,10 +48,11 @@
 
 ### 请求改写链路
 
+- context 钩子的出站处理分三阶段：`prepareHistoryForSend`（`src/outbound.ts`）先改写持久历史、补全摘要并处理 reasoning/退化；`src/index.ts` 保留临时恢复提醒和 nudge 策略；`finalizeOutboundMessages` 最后拼回 live tail、宿主 system/toolset 消息，再在压缩视图中检查工具配对。临时 user nudge 和 live tail 不能参与“compress 轮次已结束”的判断。
 - 紧急截断生效：`patchRefTag` 对 assistant 文本和无 ref 标签的消息也同步内核的截断正文（以 `[truncated for context space]` 标记为准）。以前内核截掉了、出站却还是原文。
 - 最近一条用户消息不被紧急截断：`protectLatestUserMessage`（`src/messages.ts`）在 `processTurn` 后恢复它的原文，再把这部分预算交给内核截断器去截其他候选。仍然放不下时记 `latest-user-kept` 日志并提示一次。内核（0.0.98，上游 0.0.119 仍未修）本身不动。
 - 计量复用：`sentViewMeterMatches` 用活动块签名（块 id、覆盖数、runId、tier、摘要长度）和历史金丝雀（记录时的消息数、首尾 id，要求这一轮只是在后面追加），记录上一轮的原始估算，采用时加上这一轮的新增（`adoptedViewTokens`）；原始估算变小、分支切换、回退或就地 refold 都会重新测量。
-- compress 调用里实际会发出去的 thinking 计入估算（`keptCompressThinkingTokens`，和请求时的删除规则一致），只在 context 钩子里用；`acp_status` 等显示的数字没有加这一项。compress 的工具结果计入 `estimateTokens`；调用参数仍跳过，因为块摘要已经由内核的摘要消息计过一次。
+- 共享计量入口 `measureTurnInputs`（`src/tokens.ts`）先应用该模型学到的窗口，再扣输出预留；统一系统提示、图片、保留的 compress thinking 和可信宿主用量的基础读数。context 发送、compress 预演、`acp_status` 和 `/acp` 面板共用它；发送路径独有的一次性 overflow floor、校准采样和 meter 记录仍在 context 钩子内，展示/预演不消费这些状态。展示与发送视图 probe 使用克隆状态，probe 禁用 clip replay。compress 的工具结果计入 `estimateTokens`；调用参数仍跳过，因为块摘要已经由内核的摘要消息计过一次。
 - `acp_context` 的调用和结果在投影里用它包装的 op 名（decompress/search_context/…），内核按工具名的策略（`neverPreserveRecentTools`、受保护工具等）因此对外壳生效；出站消息仍是 `acp_context`。
 - 应用 Pi 的 `context_edit`（`applyContextEdits`，`src/messages.ts`）：`buildContextEntries()` 只返回原始路径，不应用编辑；Pi 自动重试（`_omitRecoveryAttempt`）用 `replacement: null` 的编辑删掉失败尝试，不处理就会被重建的请求重新发出。语义照 Pi `buildSessionProjection`：`null` 省略目标，否则只替换 content（assistant/toolResult 的字符串转成一个 text part）；编辑条目本身保留在数组里（投影为空），供下面的判断定位。`runtime.stateFor` 和 `/acp export` 都先过它；增量投影缓存遇到新的 `context_edit` 就整体重投影。
 - 宿主用量只在是实测值时使用（`measuredHostTokens`，`src/floor-stale.ts`）：`getContextUsage()` 只有锚定在一条有效 assistant usage（非 error/aborted、usage>0）且其后没有 `context_edit` 时才是 provider 实测；否则 Pi 的 `estimateProjectedContextTokens` 会按字符粗估自己的整段投影，也就是未折叠的原始历史（2026-10-21 一例：发送视图 54K，宿主报 641,881）。此时 context 钩子不设 hostFloor、不校准、不喂溢出守卫，`/acp` 面板和 `acp_status` 的仲裁也一样；面板里标着 host footer scale 的那一行仍照搬 Pi 的数字。turn 日志记 `hostIgnored=estimate`。
@@ -66,6 +67,7 @@
 `npm test` 预加载 `tests/support/isolate-env.ts`，把 `HOME`、`USERPROFILE`、`ACP_LOG_FILE` 指向临时目录，跑完删除。上游原本没有隔离，大部分测试会写进真实的 `~/.pi/acp.log`。`tests/e2e-compress-config.test.ts` 的 `withConfigDir` 同时改 `HOME` 和 `USERPROFILE`（Windows 上 `os.homedir()` 读后者）。symlink 逃逸用例的目标改为临时目录所在盘的根目录，不再依赖 `HOME`。
 
 ### 状态持久化与分支
+- 生命周期清理由 `src/runtime.ts` 的 `startSession` / `releaseSession` 统一拥有：启动重置回合追踪与 throttle episode，但保留学习到的 overflow 窗口等跨回合状态；关闭释放当前会话的缓存、计量、重试及通知/日志去重状态，不影响其他会话。排队中的锁不从 map 删除，释放仍由原 promise 链负责。回归见 `tests/runtime-lifecycle.test.ts`。
 - sidecar 写入按文件串行，每次写用独立临时文件名（`src/state.ts`），写入内容在调用时就快照，文件反映调用顺序。`acquireLock` 释放时只在队尾仍是自己时才清槽位（`src/runtime.ts`）。compress、decompress、`acp_rule` 在读-改-存期间持有会话锁。
 - 分支守卫（`src/branch-guard.ts`）：内核 `syncBlocks` 只要块覆盖的消息有一条在视图里就激活该块。`/tree` 回到块范围中间时，摘要会顶替仍在视图里的消息，泄漏该分支还没发生的内容。`runtime.stateFor`（仅 Pi 宿主）用 `sessionManager.getEntries()` 找出“部分消息在视图、部分消息是持久化但不在当前分支”的块，`withBranchGuard` 包装的 `processTurn` 本轮把它们当作 expanded 处理（原文显示），并在结果里恢复原 `expanded`，不写入 sidecar。不在会话文件里的缺失 id 维持内核原行为。
 - 按消息 ref 自动解压到文件时，文件名用 `messageFileStem`：安全 ref 原样，含 `|` 等字符的原始 entry ref 改成净化前缀加短哈希。

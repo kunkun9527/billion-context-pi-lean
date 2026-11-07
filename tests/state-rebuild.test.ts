@@ -83,6 +83,30 @@ function eventOf(entries: any[]) {
     return { type: "context", messages: entries.map((e) => ({ role: e.message.role, content: [{ type: "text", text: e.message.content }], timestamp: 0 })) };
 }
 
+for (const facade of [false, true]) for (const mode of ["inline", "file", "error", "empty", "message", "other-op"]) test(
+    `recovery replays only successful inline block restores: facade=${facade}, ${mode}`,
+    async () => {
+        const dir = await mkdtemp(join(tmpdir(), "pi-rebuild-restore-"));
+        try {
+            const entries: any[] = Array.from({ length: 7 }, (_, i) => entry(`m${i + 1}`, "user", LONG));
+            entries.push(assistantCallEntry("c1-call", "c1", [{ startId: "m1", endId: "m1", summary: "Original summary that is long enough to pass compression validation." }]), compressResultEntry("c1-result", "c1"));
+            const op = mode === "other-op" ? "search_context" : "decompress";
+            const name = facade ? "acp_context" : op;
+            const args = { blockId: mode === "message" ? "m1" : "1", inline: true, ...(mode === "file" ? { toFile: "out.txt" } : {}) };
+            entries.push({ type: "message", id: "d-call", message: { role: "assistant", content: [{ type: "toolCall", name, id: "d1", arguments: facade ? { op, args } : args }] } });
+            entries.push({ type: "message", id: "d-result", message: { role: "toolResult", toolName: name, toolCallId: "d1", isError: mode === "error", content: [{ type: "text", text: mode === "empty" ? "Block b1 has no restorable message content." : mode === "message" ? "Message m1 restored inline:" : "Restored block b1 (1 item) inline:\n\noriginal text" }] } });
+            const { api, handlers } = captureApi();
+            createAcpExtension(ADAPTER)(api as any);
+            const stateFile = join(dir, "restored.session.jsonl");
+            await fire(handlers, entries, fakeCtx(entries, stateFile, `restore-${mode}`, dir));
+            const state = JSON.parse(readFileSync(`${stateFile}.acp.json`, "utf8"));
+            assert.equal(state.blocks[0].restoredInline === true, mode === "inline");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    },
+);
+
 const ADAPTER = { modelContextLimit: 200_000 };
 const LONG = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor ".repeat(80);
 

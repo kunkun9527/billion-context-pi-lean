@@ -179,6 +179,58 @@ test("compress: refolding over an active block sends its summary, not the raw me
   assert.match(calls[1]!.context.systemPrompt, /CARRY FORWARD/);
 });
 
+for (const facade of [false, true]) for (const mixed of [false, true]) for (const shape of ["single", "adjacent"]) test(`dedicated inline refold survives log-only recovery (facade=${facade}, mixed=${mixed}, shape=${shape})`, async () => {
+  let revision = 0;
+  const registry = fakeRegistry([model("cheap", "summarizer")], async () => ({
+    role: "assistant", content: [{ type: "text", text: `${DEDICATED} revision ${++revision}` }], stopReason: "stop",
+  }), []);
+  // Three eligible messages must remain outside the five-message tail even
+  // after two of them are folded, so a mixed batch can also create a new block.
+  const entries = [...compressibleEntries(), userMsg("e8", FILLER), userMsg("e9", FILLER)];
+  entries[2] = userMsg("e3", LONG); // New range must also exceed minCompressRange.
+  const { api, ctx, compress, stateFile } = await setup(`rebuild-refold-${mixed}`, registry, {
+    acpJson: { compressionModelId: "cheap/summarizer" }, entries,
+  });
+  const record = async (name: string, id: string, args: any, tool: any) => {
+    const result = await tool.execute(id, args, undefined, undefined, ctx);
+    assert.doesNotMatch(result.content[0].text, /FAILED|Errors:/);
+    const loggedName = facade && name === "decompress" ? "acp_context" : name;
+    const loggedArgs = loggedName === "acp_context" ? { op: name, args } : args;
+    entries.push({ type: "message", id: `${id}-call`, message: { role: "assistant", content: [{ type: "toolCall", name: loggedName, id, arguments: loggedArgs }], timestamp: 0 } });
+    entries.push({ type: "message", id: `${id}-result`, message: { role: "toolResult", toolName: loggedName, toolCallId: id, ...result, isError: false, timestamp: 0 } });
+    return result;
+  };
+  const initial = [{ startId: "m00001", endId: "m00001", summary: FALLBACK }];
+  if (shape !== "single") initial.push({ startId: "m00002", endId: "m00002", summary: FALLBACK });
+  await record("compress", "first", { content: initial }, compress);
+  const decompress = api.tools.find((t: any) => t.name === "decompress")!;
+  for (const blockId of shape === "adjacent" ? ["b1", "b2"] : ["b1"]) {
+    const restored = await record("decompress", `restore-${blockId}`, { blockId, inline: true }, decompress);
+    assert.match(restored.content[0].text, new RegExp(`^Restored block ${blockId} \\(`));
+  }
+  const restoredState = JSON.parse(await fs.readFile(`${stateFile}.acp.json`, "utf8"));
+  assert.ok(restoredState.blocks.filter((b: any) => b.active).every((b: any) => b.restoredInline), "every active block was restored inline");
+  const ranges = [{ startId: "m00001", endId: shape === "single" ? "m00001" : "m00002", summary: FALLBACK }];
+  if (mixed) ranges.push({ startId: "m00003", endId: "m00003", summary: FALLBACK });
+  const refold = await record("compress", "refold", { content: ranges }, compress);
+  const live = JSON.parse(await fs.readFile(`${stateFile}.acp.json`, "utf8"));
+  if (shape === "single" || mixed) {
+    const expectedRecords = (shape === "adjacent" ? 2 : 1) + Number(mixed);
+    assert.equal(refold.details?.acpFolded?.ranges.length, expectedRecords, "record every actually changed block, including cross-block refolds");
+  } else {
+    // Baseline 4b9bc2c: a fully consumed cross-block range bypasses the
+    // dedicated model and uses the caller summary. Preserve that live behavior.
+    assert.equal(refold.details?.acpFolded, undefined);
+  }
+  if (shape === "adjacent") assert.deepEqual(live.blocks.slice(0, 2).map((b: any) => b.summary), [FALLBACK, FALLBACK]);
+  const recovered = await setup(`rebuild-refold-import-${mixed}`, registry, {
+    acpJson: { compressionModelId: "cheap/summarizer" }, entries,
+  });
+  const rebuilt = JSON.parse(await fs.readFile(`${recovered.stateFile}.acp.json`, "utf8"));
+  const memory = (s: any) => s.blocks.map(({ blockId, summary, effectiveMessageIds, active, restoredInline }: any) => ({ blockId, summary, effectiveMessageIds, active, restoredInline: restoredInline === true }));
+  assert.deepEqual(memory(rebuilt), memory(live), "log-only recovery must retain the exact dedicated refold summary and block identity");
+});
+
 test("compress: an earlier block in the middle of the range is sent as a pinned summary", async () => {
   const calls: Call[] = [];
   const registry = fakeRegistry([model("cheap", "summarizer")], textReply(DEDICATED), calls);
@@ -289,6 +341,17 @@ test("Lean: details record only the ranges the kernel actually folded", async ()
   const text = out.content.map((c: { text?: string }) => c.text ?? "").join("\n");
   assert.match(text, /m09998|m09999/, "the kernel reported the bad range");
   assert.deepEqual(out.details?.acpFolded?.ranges.map((r: { startId: string }) => r.startId), ["m00001"]);
+});
+
+test("Lean: duplicate overlapping ranges record only the summary actually applied", async () => {
+  let n = 0;
+  const registry = fakeRegistry([model("cheap", "summarizer")], async () => ({ role: "assistant", content: [{ type: "text", text: `${DEDICATED} revision ${++n}` }], stopReason: "stop" }), []);
+  const { compress, ctx } = await setup("details-overlap", registry, { acpJson: { compressionModelId: "cheap/summarizer" } });
+  const range = { startId: "m00001", endId: "m00001", summary: FALLBACK };
+  const out = await compress.execute("overlap", { content: [range, range] }, undefined, undefined, ctx);
+  assert.match(out.content[0].text, /overlaps an earlier range/);
+  assert.equal(out.details?.acpFolded?.ranges.length, 1);
+  assert.equal(out.details.acpFolded.ranges[0].summary, `${DEDICATED} revision 1`);
 });
 
 test("Lean: a failed dedicated call does not fold the range (no short-fallback block)", async () => {

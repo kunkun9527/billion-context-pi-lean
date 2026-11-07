@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AcpRuntime } from "../src/runtime.js";
+import { OverflowEpisode } from "../src/overflow-selfheal.js";
+import { resolveReasoningDrop } from "../src/reasoning-drop.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 // tsup defines CURRENT_VERSION at build time; under the node test runner it
@@ -11,10 +13,13 @@ const { makeCommands } = await import("../src/commands.js");
 function fakeRuntime(): AcpRuntime {
   return {
     adapter: {},
+    overflowFor: () => new OverflowEpisode(),
+    reasoningDropFor: () => resolveReasoningDrop(),
     configFor: () => ({ modelContextLimit: 1_000_000 }),
     stateFor: async () => ({
       state: { blocks: [], stats: { tokensCompressed: 0 }, messageRefs: { byRaw: {}, byRef: {} } },
       coreMessages: [],
+      entries: [],
     }),
     // Stub processTurn: we only exercise the panel's rendering of the
     // breakdown, not the kernel's classification logic.
@@ -63,6 +68,7 @@ test("/acp panel Session-only derives on the estimation scale (positive assertio
   (runtime.stateFor as () => Promise<unknown>) = async () => ({
     state: { blocks: [], stats: { tokensCompressed: 0 }, messageRefs: { byRaw: {}, byRef: {} } },
     coreMessages: [{ id: "p1", role: "user", contentType: "text", text: "a".repeat(440_000) }],
+    entries: [],
   });
   const notified: string[] = [];
   const ctx = {

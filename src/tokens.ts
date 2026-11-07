@@ -1,6 +1,11 @@
 import { defaultCountTokens, type CompressionCore, type CompressionState, type Config, type CoreMessage } from "acp-kernel";
-import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { AcpRuntime } from "./runtime.js";
 import { countImageBlocks } from "./messages.js";
+import { compressionAnchorStaleness, measuredHostTokens } from "./floor-stale.js";
+import { applyOutputHeadroom, resolveOutputHeadroomCap } from "./overflow-selfheal.js";
+import { keptCompressThinkingTokens } from "./reasoning-drop.js";
+import { logInfo } from "./log.js";
 
 type AgentMessage = SessionMessageEntry["message"];
 
@@ -48,6 +53,53 @@ export function estimateTokens(messages: CoreMessage[], coveredIds?: Set<string>
     if (img) tokens += img;
   }
   return tokens;
+}
+
+/** Shared ruler for send, display and compress preview. This only reads the
+ * overflow episode: consuming its one-shot arm, calibration samples and the
+ * previous-turn meter remain send-only policies in the context hook. */
+export function measureTurnInputs(
+  runtime: AcpRuntime,
+  ctx: ExtensionContext,
+  { state, coreMessages, entries }: Awaited<ReturnType<AcpRuntime["stateFor"]>>,
+) {
+  const sid = ctx.sessionManager.getSessionId();
+  const modelId = ctx.model?.id ?? "default";
+  const base = runtime.configFor(ctx);
+  const learnedWindow = runtime.overflowFor(sid).learnedWindowFor(modelId);
+  let config = base;
+  if (learnedWindow && learnedWindow > 0 && learnedWindow < base.modelContextLimit) {
+    config = { ...base, modelContextLimit: learnedWindow };
+    logInfo("overflow-selfheal", { sid, modelId, event: "window-recenter", resolved: base.modelContextLimit, learned: learnedWindow });
+  }
+  const headroomCap = resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct);
+  const fullWindow = config.modelContextLimit;
+  config = applyOutputHeadroom(config, ctx.model, headroomCap);
+  if (config.modelContextLimit !== fullWindow) {
+    logInfo("overflow-selfheal", { sid, event: "output-headroom", before: fullWindow, after: config.modelContextLimit, maxOutput: ctx.model?.maxTokens ?? 0, cap: headroomCap });
+  }
+  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
+  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
+  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
+  const compressThinkingTokens = keptCompressThinkingTokens(
+    entries.flatMap((e) => e.type === "message" ? [e.message] : []), runtime.reasoningDropFor(ctx),
+  );
+  const fixedTokens = systemPromptTokens + compressThinkingTokens;
+  const sentTokens = estimateTokens(coreMessages, collectCoveredMessageIds(state), imageTokens) + fixedTokens;
+  const realUsage = ctx.getContextUsage?.();
+  // Only a provider anchor may floor the ruler. After compression its stale
+  // measurement still includes genuinely reclaimed tokens (#325).
+  const realPromptTokens = measuredHostTokens(realUsage, entries);
+  const { predates, netReclaimed } = compressionAnchorStaleness(entries, state.blocks, defaultCountTokens);
+  const hostFloor = realPromptTokens > 0 ? Math.max(0, realPromptTokens - (predates ? netReclaimed : 0)) : 0;
+  return { config, fullWindow, systemPromptTokens, imageTokens, fixedTokens, sentTokens, realUsage, realPromptTokens, predates, hostFloor };
+}
+
+/** Display keeps its existing fresh-anchor floor; it neither samples live
+ * calibration nor consumes the armed emergency. Compress preview uses only
+ * the view count, since it resolves boundaries rather than sending a request. */
+export function displayTokenCount(viewTokens: number, measurement: ReturnType<typeof measureTurnInputs>): number {
+  return measurement.predates ? viewTokens : Math.max(viewTokens, measurement.realPromptTokens);
 }
 
 // Re-measure tokenCount on the ACTUAL sent view: run processTurn on a throwaway

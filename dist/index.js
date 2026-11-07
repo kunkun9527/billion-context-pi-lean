@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-N3HZKTMK.js";
+} from "./chunk-X77RHSF6.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -17502,6 +17502,174 @@ function lastTurnBoundaryIndex(entries) {
   return -1;
 }
 
+// src/floor-stale.ts
+function validAnchorUsage(u) {
+  if (!u) return false;
+  const total = (u.totalTokens ?? 0) || (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+  return total > 0;
+}
+function scanEntries(entries) {
+  let lastUsageIdx = -1;
+  let lastCompressIdx = -1;
+  let lastEditIdx = -1;
+  const compressIdxByCallId = /* @__PURE__ */ new Map();
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].type === "context_edit") lastEditIdx = i;
+    const m2 = entries[i].message;
+    if (!m2) continue;
+    if (m2.role === "assistant" && m2.stopReason !== "aborted" && m2.stopReason !== "error" && validAnchorUsage(m2.usage)) {
+      lastUsageIdx = i;
+    } else if (m2.role === "toolResult" && m2.toolName === "compress" && m2.toolCallId !== void 0 && m2.isError !== true && isCompressSuccessText(extractText(m2.content))) {
+      lastCompressIdx = i;
+      compressIdxByCallId.set(m2.toolCallId, i);
+    }
+  }
+  return { lastUsageIdx, lastEditIdx, lastCompressIdx, compressIdxByCallId };
+}
+function hostUsageMeasured(entries) {
+  const scan = scanEntries(entries);
+  return scan.lastUsageIdx >= 0 && scan.lastEditIdx < scan.lastUsageIdx;
+}
+function measuredHostTokens(usage, entries) {
+  const tokens = usage?.tokens ?? 0;
+  return tokens > 0 && hostUsageMeasured(entries) ? tokens : 0;
+}
+function compressionAnchorStaleness(entries, blocks, countTokens) {
+  const scan = scanEntries(entries);
+  let netReclaimed = 0;
+  for (const block of blocks) {
+    if (!block.active || block.compressCallId == null) continue;
+    const idx = scan.compressIdxByCallId.get(block.compressCallId);
+    if (idx == null || idx <= scan.lastUsageIdx) continue;
+    const saved = (block.compressedTokens ?? 0) - countTokens(block.summary ?? "");
+    netReclaimed += saved > 0 ? saved : 0;
+  }
+  return { predates: scan.lastCompressIdx > scan.lastUsageIdx, netReclaimed };
+}
+
+// src/overflow-selfheal.ts
+var OVERFLOW_MARKER = /prompt is too long|prompt_too_long|prompt_is_too_long|prompt too long; exceeded (?:max )?context length|request_too_large|exceeds the context window|exceeds the (maximum |model['’]s )?limit|maximum context length|maximum context size|max context length|context length exceeded|context[_ ]length[_ ]exceeded|exceeded model token limit|input token count.*exceeds|reduce the length of the messages|token limit exceeded|input is too long for requested model|maximum prompt length is|exceeds the maximum allowed input length|is longer than the model['’]?s context length|exceeds the available context size|greater than the context length|context window exceeds limit|too large for model with \d+ maximum context length|but the configured context size is|model_context_window_exceeded|range of input length should be/i;
+function inspectOverflowMessage(haystack) {
+  const body = (haystack ?? "").trim();
+  if (!body || !OVERFLOW_MARKER.test(body)) return { isOverflow: false, message: body };
+  return { isOverflow: true, window: parseOverflowWindow(body), message: body };
+}
+var NO_BODY_4XX_MARKER = /^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i;
+function isNoBody4xxError(haystack) {
+  const body = (haystack ?? "").trim();
+  return body.length > 0 && NO_BODY_4XX_MARKER.test(body);
+}
+var NO_BODY_ARM_RATIO = 0.5;
+function parseOverflowWindow(text) {
+  let m2 = />\s*(\d[\d,]*)\s*(?:tokens?)?\s*maximum/i.exec(text);
+  if (m2) return toTokenNumber(m2[1]);
+  m2 = /maximum context length is (\d[\d,]*)/i.exec(text);
+  if (m2) return toTokenNumber(m2[1]);
+  m2 = /maximum context size (?:is|of) (\d[\d,]*)/i.exec(text);
+  if (m2) return toTokenNumber(m2[1]);
+  m2 = /(?:maximum|limit) of (\d[\d,]*)\s*(?:input\s+)?tokens/i.exec(text);
+  if (m2) return toTokenNumber(m2[1]);
+  return void 0;
+}
+function toTokenNumber(raw) {
+  if (raw === void 0) return void 0;
+  const n = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(n) && n >= 1e3 ? n : void 0;
+}
+var DEFAULT_OUTPUT_HEADROOM_MAX_PCT = 0.25;
+function resolveOutputHeadroomCap(value) {
+  return value === void 0 ? DEFAULT_OUTPUT_HEADROOM_MAX_PCT : parsePercent(value);
+}
+function reserveOutputHeadroom(window, maxOutput, capPct = 1) {
+  if (Number.isFinite(window) && window > 0 && Number.isFinite(maxOutput) && maxOutput > 0 && maxOutput < window) {
+    const cap = Number.isFinite(capPct) ? Math.max(0, Math.min(capPct, 1)) : 1;
+    const reserved = Math.min(maxOutput, cap * window);
+    return reserved > 0 ? window - reserved : window;
+  }
+  return window;
+}
+function shouldReserveOutputHeadroom(api) {
+  return api !== "anthropic-messages";
+}
+function applyOutputHeadroom(config, model, capPct = 1) {
+  const maxOutput = model?.maxTokens ?? 0;
+  if (shouldReserveOutputHeadroom(model?.api)) {
+    const reserved = reserveOutputHeadroom(config.modelContextLimit, maxOutput, capPct);
+    if (reserved !== config.modelContextLimit) return { ...config, modelContextLimit: reserved };
+  }
+  return config;
+}
+var OverflowEpisode = class {
+  /** Real windows learned from overflow errors, keyed by model id. A learned
+   *  window is model-specific: switching to a bigger model mid-session must
+   *  not inherit the smaller model's learned limit (that would re-center the
+   *  bands below the new model's real window → premature compression). */
+  learned = /* @__PURE__ */ new Map();
+  learnedWindowFor(modelId) {
+    return this.learned.get(modelId) ?? null;
+  }
+  setLearnedWindow(modelId, window) {
+    this.learned.set(modelId, window);
+  }
+  /** When true, the next context event forces usage >=95% (emergency). Kept
+   *  session-scoped (not per-model): the context did not shrink, so the next
+   *  turn needs the emergency regardless of which model answers it. */
+  armed = false;
+  // --- Ambiguous no-body 4xx corroboration (incident 2026-08-23) ---
+  // Runtime/in-memory like `armed` above, NOT persisted to acp.json: the
+  // count and the sent-view basis describe the live request loop of the
+  // current process. A resumed session re-establishes both within one turn
+  // (the context event re-records the sent view; the next error re-counts),
+  // while a persisted count would arm an emergency against a fresh session
+  // whose first request may succeed.
+  /** Sent-view estimate + effective limit recorded by the context event —
+   *  the numbers of the request that just ended. */
+  sentTokens = null;
+  sentLimit = null;
+  /** Consecutive no-body 4xx errors since the last successful assistant
+   *  turn. 0 at session start (the episode is created per session). */
+  noBody4xx = 0;
+  noteSentView(tokens, limit) {
+    this.sentTokens = tokens > 0 ? tokens : null;
+    this.sentLimit = limit > 0 ? limit : null;
+  }
+  /** A successful assistant turn unwedged the request loop: the consecutive
+   *  no-body count restarts from zero. */
+  noteSuccess() {
+    this.noBody4xx = 0;
+  }
+  /**
+   * Record one ambiguous no-body 4xx and decide whether it corroborates a
+   * probable context overflow. Guards against the false positive (the same
+   * text serves non-overflow 4xx): arm only when the current sent-view
+   * estimate is >= NO_BODY_ARM_RATIO of the effective limit, OR this is the
+   * >=2nd consecutive no-body since the last success. The consecutive guard
+   * recovers the dead-loop even at a low ratio (the incident ran at ~24%:
+   * the estimate under-reported vs the input+max_tokens cap) — a genuine
+   * overflow fails identically while the context is unchanged, so repeated
+   * no-body errors with no successful turn in between are size-dependent by
+   * construction. No window can be parsed from a bodyless error, so when
+   * this arms, the emergency uses the already-resolved effective limit (no
+   * window is learned).
+   */
+  onNoBody4xx() {
+    this.noBody4xx += 1;
+    const ratio = this.sentTokens !== null && this.sentLimit !== null && this.sentLimit > 0 ? this.sentTokens / this.sentLimit : null;
+    return {
+      arm: ratio !== null && ratio >= NO_BODY_ARM_RATIO || this.noBody4xx >= 2,
+      consecutive: this.noBody4xx,
+      ratio
+    };
+  }
+  reset() {
+    this.learned.clear();
+    this.armed = false;
+    this.sentTokens = null;
+    this.sentLimit = null;
+    this.noBody4xx = 0;
+  }
+};
+
 // src/tokens.ts
 function collectCoveredMessageIds(state) {
   const ids = /* @__PURE__ */ new Set();
@@ -17537,6 +17705,40 @@ function estimateTokens(messages, coveredIds, imageTokensById) {
     if (img) tokens += img;
   }
   return tokens;
+}
+function measureTurnInputs(runtime, ctx, { state, coreMessages, entries }) {
+  const sid = ctx.sessionManager.getSessionId();
+  const modelId = ctx.model?.id ?? "default";
+  const base = runtime.configFor(ctx);
+  const learnedWindow = runtime.overflowFor(sid).learnedWindowFor(modelId);
+  let config = base;
+  if (learnedWindow && learnedWindow > 0 && learnedWindow < base.modelContextLimit) {
+    config = { ...base, modelContextLimit: learnedWindow };
+    logInfo("overflow-selfheal", { sid, modelId, event: "window-recenter", resolved: base.modelContextLimit, learned: learnedWindow });
+  }
+  const headroomCap = resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct);
+  const fullWindow = config.modelContextLimit;
+  config = applyOutputHeadroom(config, ctx.model, headroomCap);
+  if (config.modelContextLimit !== fullWindow) {
+    logInfo("overflow-selfheal", { sid, event: "output-headroom", before: fullWindow, after: config.modelContextLimit, maxOutput: ctx.model?.maxTokens ?? 0, cap: headroomCap });
+  }
+  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
+  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
+  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
+  const compressThinkingTokens = keptCompressThinkingTokens(
+    entries.flatMap((e) => e.type === "message" ? [e.message] : []),
+    runtime.reasoningDropFor(ctx)
+  );
+  const fixedTokens = systemPromptTokens + compressThinkingTokens;
+  const sentTokens = estimateTokens(coreMessages, collectCoveredMessageIds(state), imageTokens) + fixedTokens;
+  const realUsage = ctx.getContextUsage?.();
+  const realPromptTokens = measuredHostTokens(realUsage, entries);
+  const { predates, netReclaimed } = compressionAnchorStaleness(entries, state.blocks, defaultCountTokens);
+  const hostFloor = realPromptTokens > 0 ? Math.max(0, realPromptTokens - (predates ? netReclaimed : 0)) : 0;
+  return { config, fullWindow, systemPromptTokens, imageTokens, fixedTokens, sentTokens, realUsage, realPromptTokens, predates, hostFloor };
+}
+function displayTokenCount(viewTokens, measurement) {
+  return measurement.predates ? viewTokens : Math.max(viewTokens, measurement.realPromptTokens);
 }
 function sentViewTokenCount(core, messages, state, config, prelim, imageTokensById, systemPromptTokens = 0) {
   const cap = config.modelContextLimit > 0 ? Math.max(0, Math.floor(config.truncate.threshold * config.modelContextLimit) - 1) : Number.MAX_SAFE_INTEGER;
@@ -18301,13 +18503,9 @@ async function handleCompress(args, runtime, ctx, toolCallId, signal, tools = []
   if (ranges.length === 0) return "No ranges provided.";
   const { state: initialState, coreMessages, entries } = await runtime.stateFor(ctx);
   assertNotAborted(signal);
-  const config = runtime.configFor(ctx);
+  const { config, imageTokens, fixedTokens, sentTokens } = measureTurnInputs(runtime, ctx, { state: initialState, coreMessages, entries });
   const modelId = ctx.model?.id ?? "default";
-  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
-  const sentTokens = estimateTokens(coreMessages, collectCoveredMessageIds(initialState), imageTokens) + systemPromptTokens;
-  const firstTokenCount = adjustedTokenCount(runtime.core, coreMessages, initialState, config, sentTokens, imageTokens, systemPromptTokens);
+  const firstTokenCount = adjustedTokenCount(runtime.core, coreMessages, initialState, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({
     messages: coreMessages,
     state: initialState,
@@ -18387,13 +18585,13 @@ async function handleCompress(args, runtime, ctx, toolCallId, signal, tools = []
   }
   await runtime.save(applied.state, ctx);
   const { blocksCreated, tokensCompressed, errors, warnings } = applied.result;
-  const foldedRanges = finalRanges.filter(
-    (r) => applied.state.blocks.some((b2) => !beforeRunIds.has(b2.blockId) && b2.startRef === r.startId && b2.endRef === r.endId)
-  );
-  if (detailsOut && foldedRanges.length > 0 && dedicated.modelLabel !== void 0) {
+  if (detailsOut && changedBlocks.length > 0 && dedicated.modelLabel !== void 0) {
     detailsOut.acpFolded = {
       version: 1,
-      ranges: foldedRanges.map((r) => ({ startId: r.startId, endId: r.endId, summary: r.summary, ...r.topic ?? topLevelTopic ? { topic: r.topic ?? topLevelTopic } : {} }))
+      ranges: changedBlocks.map((block) => {
+        const span = beforeRunIds.has(block.blockId) ? resolveBlockSpan(block, applied.state.messageRefs.byRaw) : { startRef: block.startRef, endRef: block.endRef };
+        return { startId: span.startRef, endId: span.endRef, summary: block.summary, ...block.topic ? { topic: block.topic } : {} };
+      })
     };
   }
   if (blocksCreated > 0) {
@@ -18405,7 +18603,7 @@ async function handleCompress(args, runtime, ctx, toolCallId, signal, tools = []
       return deadRepeatRejectionText(deadSpans, count, snapshot);
     }
   }
-  const postSentTokens = adjustedTokenCount(runtime.core, coreMessages, applied.state, config, estimateTokens(coreMessages, collectCoveredMessageIds(applied.state), imageTokens) + systemPromptTokens, imageTokens, systemPromptTokens);
+  const postSentTokens = adjustedTokenCount(runtime.core, coreMessages, applied.state, config, estimateTokens(coreMessages, collectCoveredMessageIds(applied.state), imageTokens) + fixedTokens, imageTokens, fixedTokens);
   const afterTurn = runtime.core.processTurn({
     messages: coreMessages,
     state: applied.state,
@@ -18753,19 +18951,40 @@ function parseCompressCall(toolCallId, arguments_, entryIndex, folded = null) {
 }
 function rebuildStateFromLog(input) {
   const { entries, core } = input;
-  const errored = /* @__PURE__ */ new Set();
-  const succeeded = /* @__PURE__ */ new Set();
-  const folded = /* @__PURE__ */ new Map();
+  const restoreCalls = /* @__PURE__ */ new Map();
   for (const entry of entries) {
     const m2 = entryMessage(entry);
-    if (!m2 || m2.role !== "toolResult" || m2.toolName !== "compress" || !m2.toolCallId) continue;
-    if (m2.isError === true) errored.add(m2.toolCallId);
-    else {
+    if (m2?.role !== "assistant") continue;
+    for (const call of toolCallsOf(m2)) {
+      if (!call.id) continue;
+      const facade = call.arguments;
+      const restoreArgs = call.name === "decompress" ? call.arguments : call.name === "acp_context" && facade?.op === "decompress" ? facade.args : void 0;
+      const args = restoreArgs;
+      if (args?.inline !== true || args.toFile || typeof args.blockId !== "string") continue;
+      const blockId = parseBlockIdArg(args.blockId.trim());
+      if (blockId) restoreCalls.set(call.id, blockId);
+    }
+  }
+  const restores = [];
+  const succeeded = /* @__PURE__ */ new Set();
+  const folded = /* @__PURE__ */ new Map();
+  entries.forEach((entry, entryIndex) => {
+    const m2 = entryMessage(entry);
+    if (!m2 || m2.role !== "toolResult" || !m2.toolCallId || m2.isError === true) return;
+    if (m2.toolName === "decompress" || m2.toolName === "acp_context") {
+      const blockId = restoreCalls.get(m2.toolCallId);
+      const content = m2.content;
+      const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b2) => b2?.type === "text").map((b2) => b2.text).join("\n") : "";
+      if (blockId && text.startsWith(`Restored block ${blockId} (`) && /^Restored block b\d+ \(\d+ items?\) inline:/.test(text)) {
+        restores.push({ entryIndex, blockId });
+      }
+    }
+    if (m2.toolName === "compress") {
       succeeded.add(m2.toolCallId);
       const recorded = foldedFromDetails(m2.details);
       if (recorded) folded.set(m2.toolCallId, recorded);
     }
-  }
+  });
   const calls = [];
   entries.forEach((entry, entryIndex) => {
     const m2 = entryMessage(entry);
@@ -18777,10 +18996,16 @@ function rebuildStateFromLog(input) {
       else logWarn("state-rebuild", { event: "unparseable-compress-call", toolCallId: call.id });
     }
   });
-  if (calls.length === 0) return { state: input.state, report: { blocks: input.state.blocks.length, callsApplied: 0, callsSkipped: 0, errors: [] } };
   let state = input.state;
+  let nextRestore = 0;
+  const restoreThrough = (entryIndex) => {
+    while (nextRestore < restores.length && restores[nextRestore].entryIndex < entryIndex) {
+      state = markBlockRestoredInline(state, restores[nextRestore++].blockId).state;
+    }
+  };
   const report = { blocks: 0, callsApplied: 0, callsSkipped: 0, errors: [] };
   for (const call of calls) {
+    restoreThrough(call.entryIndex);
     let applied;
     try {
       const messages = entriesToCoreMessages(entries.slice(0, call.entryIndex + 1));
@@ -18807,6 +19032,7 @@ function rebuildStateFromLog(input) {
     state = applied.state;
     report.callsApplied += 1;
   }
+  restoreThrough(entries.length);
   report.blocks = state.blocks.length;
   return { state, report };
 }
@@ -18912,129 +19138,6 @@ async function abortableSleep(ms, signal) {
   }
 }
 
-// src/overflow-selfheal.ts
-var OVERFLOW_MARKER = /prompt is too long|prompt_too_long|prompt_is_too_long|prompt too long; exceeded (?:max )?context length|request_too_large|exceeds the context window|exceeds the (maximum |model['’]s )?limit|maximum context length|maximum context size|max context length|context length exceeded|context[_ ]length[_ ]exceeded|exceeded model token limit|input token count.*exceeds|reduce the length of the messages|token limit exceeded|input is too long for requested model|maximum prompt length is|exceeds the maximum allowed input length|is longer than the model['’]?s context length|exceeds the available context size|greater than the context length|context window exceeds limit|too large for model with \d+ maximum context length|but the configured context size is|model_context_window_exceeded|range of input length should be/i;
-function inspectOverflowMessage(haystack) {
-  const body = (haystack ?? "").trim();
-  if (!body || !OVERFLOW_MARKER.test(body)) return { isOverflow: false, message: body };
-  return { isOverflow: true, window: parseOverflowWindow(body), message: body };
-}
-var NO_BODY_4XX_MARKER = /^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i;
-function isNoBody4xxError(haystack) {
-  const body = (haystack ?? "").trim();
-  return body.length > 0 && NO_BODY_4XX_MARKER.test(body);
-}
-var NO_BODY_ARM_RATIO = 0.5;
-function parseOverflowWindow(text) {
-  let m2 = />\s*(\d[\d,]*)\s*(?:tokens?)?\s*maximum/i.exec(text);
-  if (m2) return toTokenNumber(m2[1]);
-  m2 = /maximum context length is (\d[\d,]*)/i.exec(text);
-  if (m2) return toTokenNumber(m2[1]);
-  m2 = /maximum context size (?:is|of) (\d[\d,]*)/i.exec(text);
-  if (m2) return toTokenNumber(m2[1]);
-  m2 = /(?:maximum|limit) of (\d[\d,]*)\s*(?:input\s+)?tokens/i.exec(text);
-  if (m2) return toTokenNumber(m2[1]);
-  return void 0;
-}
-function toTokenNumber(raw) {
-  if (raw === void 0) return void 0;
-  const n = Number(raw.replace(/,/g, ""));
-  return Number.isFinite(n) && n >= 1e3 ? n : void 0;
-}
-var DEFAULT_OUTPUT_HEADROOM_MAX_PCT = 0.25;
-function resolveOutputHeadroomCap(value) {
-  return value === void 0 ? DEFAULT_OUTPUT_HEADROOM_MAX_PCT : parsePercent(value);
-}
-function reserveOutputHeadroom(window, maxOutput, capPct = 1) {
-  if (Number.isFinite(window) && window > 0 && Number.isFinite(maxOutput) && maxOutput > 0 && maxOutput < window) {
-    const cap = Number.isFinite(capPct) ? Math.max(0, Math.min(capPct, 1)) : 1;
-    const reserved = Math.min(maxOutput, cap * window);
-    return reserved > 0 ? window - reserved : window;
-  }
-  return window;
-}
-function shouldReserveOutputHeadroom(api) {
-  return api !== "anthropic-messages";
-}
-function applyOutputHeadroom(config, model, capPct = 1) {
-  const maxOutput = model?.maxTokens ?? 0;
-  if (shouldReserveOutputHeadroom(model?.api)) {
-    const reserved = reserveOutputHeadroom(config.modelContextLimit, maxOutput, capPct);
-    if (reserved !== config.modelContextLimit) return { ...config, modelContextLimit: reserved };
-  }
-  return config;
-}
-var OverflowEpisode = class {
-  /** Real windows learned from overflow errors, keyed by model id. A learned
-   *  window is model-specific: switching to a bigger model mid-session must
-   *  not inherit the smaller model's learned limit (that would re-center the
-   *  bands below the new model's real window → premature compression). */
-  learned = /* @__PURE__ */ new Map();
-  learnedWindowFor(modelId) {
-    return this.learned.get(modelId) ?? null;
-  }
-  setLearnedWindow(modelId, window) {
-    this.learned.set(modelId, window);
-  }
-  /** When true, the next context event forces usage >=95% (emergency). Kept
-   *  session-scoped (not per-model): the context did not shrink, so the next
-   *  turn needs the emergency regardless of which model answers it. */
-  armed = false;
-  // --- Ambiguous no-body 4xx corroboration (incident 2026-08-23) ---
-  // Runtime/in-memory like `armed` above, NOT persisted to acp.json: the
-  // count and the sent-view basis describe the live request loop of the
-  // current process. A resumed session re-establishes both within one turn
-  // (the context event re-records the sent view; the next error re-counts),
-  // while a persisted count would arm an emergency against a fresh session
-  // whose first request may succeed.
-  /** Sent-view estimate + effective limit recorded by the context event —
-   *  the numbers of the request that just ended. */
-  sentTokens = null;
-  sentLimit = null;
-  /** Consecutive no-body 4xx errors since the last successful assistant
-   *  turn. 0 at session start (the episode is created per session). */
-  noBody4xx = 0;
-  noteSentView(tokens, limit) {
-    this.sentTokens = tokens > 0 ? tokens : null;
-    this.sentLimit = limit > 0 ? limit : null;
-  }
-  /** A successful assistant turn unwedged the request loop: the consecutive
-   *  no-body count restarts from zero. */
-  noteSuccess() {
-    this.noBody4xx = 0;
-  }
-  /**
-   * Record one ambiguous no-body 4xx and decide whether it corroborates a
-   * probable context overflow. Guards against the false positive (the same
-   * text serves non-overflow 4xx): arm only when the current sent-view
-   * estimate is >= NO_BODY_ARM_RATIO of the effective limit, OR this is the
-   * >=2nd consecutive no-body since the last success. The consecutive guard
-   * recovers the dead-loop even at a low ratio (the incident ran at ~24%:
-   * the estimate under-reported vs the input+max_tokens cap) — a genuine
-   * overflow fails identically while the context is unchanged, so repeated
-   * no-body errors with no successful turn in between are size-dependent by
-   * construction. No window can be parsed from a bodyless error, so when
-   * this arms, the emergency uses the already-resolved effective limit (no
-   * window is learned).
-   */
-  onNoBody4xx() {
-    this.noBody4xx += 1;
-    const ratio = this.sentTokens !== null && this.sentLimit !== null && this.sentLimit > 0 ? this.sentTokens / this.sentLimit : null;
-    return {
-      arm: ratio !== null && ratio >= NO_BODY_ARM_RATIO || this.noBody4xx >= 2,
-      consecutive: this.noBody4xx,
-      ratio
-    };
-  }
-  reset() {
-    this.learned.clear();
-    this.armed = false;
-    this.sentTokens = null;
-    this.sentLimit = null;
-    this.noBody4xx = 0;
-  }
-};
-
 // src/branch-guard.ts
 var marks = /* @__PURE__ */ new WeakMap();
 function baseIdOf2(id) {
@@ -19098,6 +19201,123 @@ function withBranchGuard(core) {
       return out;
     }
   };
+}
+
+// src/live-only-tail.ts
+var MAX_LIVE_ONLY_TAIL = 8;
+function sigText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts = [];
+  for (const block of content) {
+    const b2 = block;
+    if (b2?.type === "text" && typeof b2.text === "string") parts.push(b2.text);
+  }
+  return parts.join("\n");
+}
+function weakMessageSig(message) {
+  const m2 = message ?? {};
+  const role = typeof m2.role === "string" ? m2.role : "";
+  const customType = typeof m2.customType === "string" ? m2.customType : "";
+  const toolCallId = typeof m2.toolCallId === "string" ? m2.toolCallId : "";
+  const text = sigText(m2.content);
+  return [role, customType, toolCallId, String(text.length), text.slice(0, 32), text.length > 32 ? text.slice(-32) : ""].join("\0");
+}
+function entryAsLiveShape(entry) {
+  if (entry.type === "message") {
+    const msg = entry.message;
+    return { role: msg.role, customType: msg.customType, toolCallId: msg.toolCallId, content: msg.content };
+  }
+  if (entry.type === "custom_message") {
+    return { role: "custom", customType: entry.customType, content: entry.content };
+  }
+  return void 0;
+}
+function countPersisted(entries) {
+  let n = 0;
+  for (const e of entries) if (e.type === "message" || e.type === "custom_message") n++;
+  return n;
+}
+function persistedAt(entries, n) {
+  let i = 0;
+  for (const e of entries) {
+    if (e.type === "message" || e.type === "custom_message") {
+      if (i === n) return e;
+      i++;
+    }
+  }
+  return void 0;
+}
+function alignAndExtract(entries, live) {
+  const persisted = entries.filter((e) => e.type === "message" || e.type === "custom_message").map((e) => entryAsLiveShape(e)).filter((shape) => shape !== void 0);
+  const max = Math.min(persisted.length, live.length);
+  let i = 0;
+  while (i < max && weakMessageSig(persisted[i]) === weakMessageSig(live[i])) i++;
+  if (i === max) {
+    const tail = live.slice(max);
+    return { tail: tail.length > 0 && tail.length <= MAX_LIVE_ONLY_TAIL ? tail : null, alignedFully: true, alignedPrefix: max };
+  }
+  if (i === max - 1 && i === persisted.length - 1 && i === live.length - 1) {
+    const liveMsg = live[i];
+    if (liveMsg && typeof liveMsg.role === "string" && liveMsg.role === "user") {
+      const before = sigText(persisted[i]?.content);
+      const after = sigText(liveMsg.content);
+      if (before && after && after.startsWith(before)) {
+        const suffix = after.slice(before.length).trim();
+        if (suffix.length > 0) {
+          return { tail: [{ role: "user", content: [{ type: "text", text: suffix }], timestamp: Date.now() }], alignedFully: true, alignedPrefix: i };
+        }
+      }
+    }
+  }
+  return { tail: null, alignedFully: false, alignedPrefix: i };
+}
+var tailCache = /* @__PURE__ */ new Map();
+function liveOnlyTailCached(sid, entries, live) {
+  const prev = tailCache.get(sid);
+  const persistedCount = countPersisted(entries);
+  if (prev && prev.lastPersistedSig !== null && persistedCount >= prev.persistedCount && live.length >= prev.liveCount && live.length - prev.liveCount <= MAX_LIVE_ONLY_TAIL * 4) {
+    const canaryEntry = persistedAt(entries, prev.persistedCount - 1);
+    const canary = canaryEntry ? weakMessageSig(entryAsLiveShape(canaryEntry)) : null;
+    if (canary === prev.lastPersistedSig) {
+      const max = Math.min(persistedCount, live.length);
+      let pIdx = 0;
+      let aligned = true;
+      for (const e of entries) {
+        if (pIdx >= max) break;
+        if (e.type === "message" || e.type === "custom_message") {
+          if (pIdx >= prev.alignedTo && weakMessageSig(entryAsLiveShape(e)) !== weakMessageSig(live[pIdx])) {
+            aligned = false;
+            break;
+          }
+          pIdx++;
+        }
+      }
+      if (aligned) {
+        const lastEntry2 = persistedAt(entries, persistedCount - 1);
+        tailCache.set(sid, {
+          persistedCount,
+          liveCount: live.length,
+          alignedTo: max,
+          lastPersistedSig: lastEntry2 ? weakMessageSig(entryAsLiveShape(lastEntry2)) : null
+        });
+        const tail = live.slice(max);
+        return tail.length > 0 && tail.length <= MAX_LIVE_ONLY_TAIL ? tail : null;
+      }
+    }
+  }
+  const result = alignAndExtract(entries, live);
+  const lastEntry = persistedAt(entries, persistedCount - 1);
+  tailCache.set(sid, {
+    persistedCount,
+    liveCount: live.length,
+    alignedTo: result.alignedPrefix,
+    lastPersistedSig: lastEntry ? weakMessageSig(entryAsLiveShape(lastEntry)) : null
+  });
+  return result.tail;
+}
+function dropLiveOnlyTailCache(sid) {
+  tailCache.delete(sid);
 }
 
 // src/runtime.ts
@@ -19460,13 +19680,54 @@ function createRuntime(adapter) {
       logInfo("state", { sid: sessionId, event: "off-branch-blocks", blocks: off });
     }
   }
+  const latestUserOverLimit = /* @__PURE__ */ new Set();
+  function noteLatestUserOverLimit(sid, active) {
+    const first = active && !latestUserOverLimit.has(sid);
+    if (active) latestUserOverLimit.add(sid);
+    else latestUserOverLimit.delete(sid);
+    return first;
+  }
+  const degenerationNotices = /* @__PURE__ */ new Map();
+  function noteDegenerationNotice(sid, signature) {
+    if (degenerationNotices.get(sid) === signature) return false;
+    degenerationNotices.set(sid, signature);
+    return true;
+  }
+  function clearTurnTracking(sid) {
+    clearNudgeTracking(sid);
+    clearCompressRetryTracking(sid);
+    dropHostUsageSamples(sid);
+    dropSizeDivergence(sid);
+    dropTerminalEscape(sid);
+    dropTruncationSkipped(sid);
+    dropSentViewCount(sid);
+    dropProjectionCache(sid);
+    dropLiveOnlyTailCache(sid);
+    latestUserOverLimit.delete(sid);
+    degenerationNotices.delete(sid);
+  }
+  function startSession(sid) {
+    store.invalidate();
+    clearTurnTracking(sid);
+    throttleEpisodes.get(sid)?.reset();
+  }
+  function releaseSession(sid) {
+    clearTurnTracking(sid);
+    clearDeadCompress(sid);
+    dropLastSentMessages(sid);
+    dropTokenScale(sid);
+    overflowDrop(sid);
+    throttleDrop(sid);
+    strictEchoLogged.delete(sid);
+    offBranchLogged.delete(sid);
+  }
   async function save(state, ctx) {
     const sm = ctx.sessionManager;
     await store.save(state, sm.getSessionFile() ?? void 0, sm.getSessionId());
   }
   let refused = false;
   let refusalMessage = null;
-  return { core, store, get refused() {
+  return { core, store, startSession, releaseSession, noteLatestUserOverLimit, noteDegenerationNotice, get refused() {
     return refused;
   }, set refused(v2) {
     refused = v2;
@@ -19911,7 +20172,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.2.5";
+    return "0.3.0";
   } catch {
     return "dev";
   }
@@ -20022,55 +20283,6 @@ function readToolSurfaceWithPacks(cwd) {
   return mergeToolPrompts(packToolPrompts(pack), inline);
 }
 
-// src/floor-stale.ts
-function validAnchorUsage(u) {
-  if (!u) return false;
-  const total = (u.totalTokens ?? 0) || (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
-  return total > 0;
-}
-function scanEntries(entries) {
-  let lastUsageIdx = -1;
-  let lastCompressIdx = -1;
-  let lastEditIdx = -1;
-  const compressIdxByCallId = /* @__PURE__ */ new Map();
-  for (let i = 0; i < entries.length; i++) {
-    if (entries[i].type === "context_edit") lastEditIdx = i;
-    const m2 = entries[i].message;
-    if (!m2) continue;
-    if (m2.role === "assistant" && m2.stopReason !== "aborted" && m2.stopReason !== "error" && validAnchorUsage(m2.usage)) {
-      lastUsageIdx = i;
-    } else if (m2.role === "toolResult" && m2.toolName === "compress" && m2.toolCallId !== void 0 && m2.isError !== true && isCompressSuccessText(extractText(m2.content))) {
-      lastCompressIdx = i;
-      compressIdxByCallId.set(m2.toolCallId, i);
-    }
-  }
-  return { lastUsageIdx, lastEditIdx, lastCompressIdx, compressIdxByCallId };
-}
-function hostUsageMeasured(entries) {
-  const scan = scanEntries(entries);
-  return scan.lastUsageIdx >= 0 && scan.lastEditIdx < scan.lastUsageIdx;
-}
-function measuredHostTokens(usage, entries) {
-  const tokens = usage?.tokens ?? 0;
-  return tokens > 0 && hostUsageMeasured(entries) ? tokens : 0;
-}
-function usageAnchorPredatesCompression(entries) {
-  const scan = scanEntries(entries);
-  return scan.lastCompressIdx > scan.lastUsageIdx;
-}
-function compressionAnchorStaleness(entries, blocks, countTokens) {
-  const scan = scanEntries(entries);
-  let netReclaimed = 0;
-  for (const block of blocks) {
-    if (!block.active || block.compressCallId == null) continue;
-    const idx = scan.compressIdxByCallId.get(block.compressCallId);
-    if (idx == null || idx <= scan.lastUsageIdx) continue;
-    const saved = (block.compressedTokens ?? 0) - countTokens(block.summary ?? "");
-    netReclaimed += saved > 0 ? saved : 0;
-  }
-  return { predates: scan.lastCompressIdx > scan.lastUsageIdx, netReclaimed };
-}
-
 // src/status-tool.ts
 var StatusParams = typebox_exports.Object({
   scope: typebox_exports.Optional(typebox_exports.Union([typebox_exports.Literal("compressed"), typebox_exports.Literal("uncompressed")], { description: '"compressed" = drill into blocks; "uncompressed" = show visible messages/ranges. Default: overview.' })),
@@ -20106,20 +20318,14 @@ function makeStatusTool(runtime, overrides) {
 }
 async function handleStatus(args, runtime, ctx) {
   const { state, coreMessages, entries } = await runtime.stateFor(ctx);
-  const config = applyOutputHeadroom(runtime.configFor(ctx), ctx.model, resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct));
-  const coveredIds = collectCoveredMessageIds(state);
-  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
-  const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
-  const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
-  const providerReal = measuredHostTokens(ctx.getContextUsage?.(), entries);
-  const anchorStale = usageAnchorPredatesCompression(entries);
+  const measurement = measureTurnInputs(runtime, ctx, { state, coreMessages, entries });
+  const { config, sentTokens, imageTokens, fixedTokens, realPromptTokens: providerReal } = measurement;
+  const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({
     messages: coreMessages,
-    state,
+    state: structuredClone(state),
     config,
-    tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, providerReal)
+    tokenCount: displayTokenCount(viewSentTokens, measurement)
   });
   const processed = turn.messages;
   const modelInfo = ctx.model;
@@ -20825,21 +21031,14 @@ function resolveSessionDir(sm) {
 }
 async function statusReport(runtime, ctx) {
   const { state, coreMessages, entries } = await runtime.stateFor(ctx);
-  const config = applyOutputHeadroom(runtime.configFor(ctx), ctx.model, resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct));
-  const realUsage = ctx.getContextUsage?.();
-  const realTokens = measuredHostTokens(realUsage, entries ?? []);
-  const anchorStale = usageAnchorPredatesCompression(entries ?? []);
-  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
+  const measurement = measureTurnInputs(runtime, ctx, { state, coreMessages, entries });
+  const { config, systemPromptTokens, imageTokens, fixedTokens, sentTokens, realUsage, predates: anchorStale } = measurement;
   const imageTokensTotal = [...imageTokens.values()].reduce((a, b2) => a + b2, 0);
   const thinkingTokensTotal = coreMessages.reduce((sum, m2) => sum + (m2.thinkingTokens ?? 0), 0);
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m2) => m2.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
-  const coveredIds = collectCoveredMessageIds(state);
-  const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
-  const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
-  const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, realTokens) });
-  const versionStr = "0.2.5" ? `billion-context-pi@${"0.2.5"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
+  const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
+  const versionStr = "0.3.0" ? `billion-context-pi@${"0.3.0"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -20851,191 +21050,6 @@ async function statusReport(runtime, ctx) {
     cacheUsages: cacheUsageSamples(entries ?? [])
   });
   return text;
-}
-
-// src/live-only-tail.ts
-var MAX_LIVE_ONLY_TAIL = 8;
-function sigText(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts = [];
-  for (const block of content) {
-    const b2 = block;
-    if (b2?.type === "text" && typeof b2.text === "string") parts.push(b2.text);
-  }
-  return parts.join("\n");
-}
-function weakMessageSig(message) {
-  const m2 = message ?? {};
-  const role = typeof m2.role === "string" ? m2.role : "";
-  const customType = typeof m2.customType === "string" ? m2.customType : "";
-  const toolCallId = typeof m2.toolCallId === "string" ? m2.toolCallId : "";
-  const text = sigText(m2.content);
-  return [role, customType, toolCallId, String(text.length), text.slice(0, 32), text.length > 32 ? text.slice(-32) : ""].join("\0");
-}
-function entryAsLiveShape(entry) {
-  if (entry.type === "message") {
-    const msg = entry.message;
-    return { role: msg.role, customType: msg.customType, toolCallId: msg.toolCallId, content: msg.content };
-  }
-  if (entry.type === "custom_message") {
-    return { role: "custom", customType: entry.customType, content: entry.content };
-  }
-  return void 0;
-}
-function countPersisted(entries) {
-  let n = 0;
-  for (const e of entries) if (e.type === "message" || e.type === "custom_message") n++;
-  return n;
-}
-function persistedAt(entries, n) {
-  let i = 0;
-  for (const e of entries) {
-    if (e.type === "message" || e.type === "custom_message") {
-      if (i === n) return e;
-      i++;
-    }
-  }
-  return void 0;
-}
-function alignAndExtract(entries, live) {
-  const persisted = entries.filter((e) => e.type === "message" || e.type === "custom_message").map((e) => entryAsLiveShape(e)).filter((shape) => shape !== void 0);
-  const max = Math.min(persisted.length, live.length);
-  let i = 0;
-  while (i < max && weakMessageSig(persisted[i]) === weakMessageSig(live[i])) i++;
-  if (i === max) {
-    const tail = live.slice(max);
-    return { tail: tail.length > 0 && tail.length <= MAX_LIVE_ONLY_TAIL ? tail : null, alignedFully: true, alignedPrefix: max };
-  }
-  if (i === max - 1 && i === persisted.length - 1 && i === live.length - 1) {
-    const liveMsg = live[i];
-    if (liveMsg && typeof liveMsg.role === "string" && liveMsg.role === "user") {
-      const before = sigText(persisted[i]?.content);
-      const after = sigText(liveMsg.content);
-      if (before && after && after.startsWith(before)) {
-        const suffix = after.slice(before.length).trim();
-        if (suffix.length > 0) {
-          return { tail: [{ role: "user", content: [{ type: "text", text: suffix }], timestamp: Date.now() }], alignedFully: true, alignedPrefix: i };
-        }
-      }
-    }
-  }
-  return { tail: null, alignedFully: false, alignedPrefix: i };
-}
-var tailCache = /* @__PURE__ */ new Map();
-function liveOnlyTailCached(sid, entries, live) {
-  const prev = tailCache.get(sid);
-  const persistedCount = countPersisted(entries);
-  if (prev && prev.lastPersistedSig !== null && persistedCount >= prev.persistedCount && live.length >= prev.liveCount && live.length - prev.liveCount <= MAX_LIVE_ONLY_TAIL * 4) {
-    const canaryEntry = persistedAt(entries, prev.persistedCount - 1);
-    const canary = canaryEntry ? weakMessageSig(entryAsLiveShape(canaryEntry)) : null;
-    if (canary === prev.lastPersistedSig) {
-      const max = Math.min(persistedCount, live.length);
-      let pIdx = 0;
-      let aligned = true;
-      for (const e of entries) {
-        if (pIdx >= max) break;
-        if (e.type === "message" || e.type === "custom_message") {
-          if (pIdx >= prev.alignedTo && weakMessageSig(entryAsLiveShape(e)) !== weakMessageSig(live[pIdx])) {
-            aligned = false;
-            break;
-          }
-          pIdx++;
-        }
-      }
-      if (aligned) {
-        const lastEntry2 = persistedAt(entries, persistedCount - 1);
-        tailCache.set(sid, {
-          persistedCount,
-          liveCount: live.length,
-          alignedTo: max,
-          lastPersistedSig: lastEntry2 ? weakMessageSig(entryAsLiveShape(lastEntry2)) : null
-        });
-        const tail = live.slice(max);
-        return tail.length > 0 && tail.length <= MAX_LIVE_ONLY_TAIL ? tail : null;
-      }
-    }
-  }
-  const result = alignAndExtract(entries, live);
-  const lastEntry = persistedAt(entries, persistedCount - 1);
-  tailCache.set(sid, {
-    persistedCount,
-    liveCount: live.length,
-    alignedTo: result.alignedPrefix,
-    lastPersistedSig: lastEntry ? weakMessageSig(entryAsLiveShape(lastEntry)) : null
-  });
-  return result.tail;
-}
-function dropLiveOnlyTailCache(sid) {
-  tailCache.delete(sid);
-}
-
-// src/system-passthrough.ts
-function isSystem(message) {
-  return typeof message === "object" && message !== null && message.role === "system";
-}
-function carryHostSystemMessages(rebuilt, input) {
-  const inputSystems = input.filter(isSystem);
-  if (inputSystems.length === 0) return rebuilt;
-  const rebuiltSystems = rebuilt.filter(isSystem);
-  if (rebuiltSystems.length === 0) return [...inputSystems, ...rebuilt];
-  let changed = false;
-  let sysIdx = 0;
-  const patched = rebuilt.map((message) => {
-    if (!isSystem(message)) return message;
-    const source = inputSystems[sysIdx++];
-    if (!source) return message;
-    const out = message;
-    const src = source;
-    let next = null;
-    for (const key of Object.keys(src)) {
-      if (out[key] === void 0 && src[key] !== void 0) {
-        next ??= { ...out };
-        next[key] = src[key];
-      }
-    }
-    if (next !== null) {
-      changed = true;
-      return next;
-    }
-    return message;
-  });
-  return changed ? patched : rebuilt;
-}
-
-// src/tool-pair-sanitizer.ts
-function sanitizeToolPairing(messages) {
-  const empty = { messages, droppedResults: [] };
-  if (!Array.isArray(messages) || messages.length === 0) return empty;
-  try {
-    const callIds = /* @__PURE__ */ new Set();
-    for (const raw of messages) {
-      const msg = raw;
-      if (!msg || typeof msg !== "object" || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-      for (const b2 of msg.content) {
-        if (b2 && b2.type === "toolCall" && typeof b2.id === "string" && b2.id.length > 0) callIds.add(b2.id);
-      }
-    }
-    let changed = false;
-    const out = [];
-    const droppedResults = [];
-    for (const raw of messages) {
-      const msg = raw;
-      if (msg && typeof msg === "object" && msg.role === "toolResult") {
-        const tcid = msg.toolCallId;
-        const label = typeof tcid === "string" && tcid.length > 0 ? tcid : "(missing toolCallId)";
-        if (typeof tcid !== "string" || tcid.length === 0 || !callIds.has(tcid)) {
-          droppedResults.push(label);
-          changed = true;
-          continue;
-        }
-      }
-      out.push(raw);
-    }
-    return changed ? { messages: out, droppedResults } : empty;
-  } catch {
-    return empty;
-  }
 }
 
 // src/degeneration.ts
@@ -21199,6 +21213,115 @@ function degenerationNotice(runs) {
       }
     ],
     timestamp: Date.now()
+  };
+}
+
+// src/system-passthrough.ts
+function isSystem(message) {
+  return typeof message === "object" && message !== null && message.role === "system";
+}
+function carryHostSystemMessages(rebuilt, input) {
+  const inputSystems = input.filter(isSystem);
+  if (inputSystems.length === 0) return rebuilt;
+  const rebuiltSystems = rebuilt.filter(isSystem);
+  if (rebuiltSystems.length === 0) return [...inputSystems, ...rebuilt];
+  let changed = false;
+  let sysIdx = 0;
+  const patched = rebuilt.map((message) => {
+    if (!isSystem(message)) return message;
+    const source = inputSystems[sysIdx++];
+    if (!source) return message;
+    const out = message;
+    const src = source;
+    let next = null;
+    for (const key of Object.keys(src)) {
+      if (out[key] === void 0 && src[key] !== void 0) {
+        next ??= { ...out };
+        next[key] = src[key];
+      }
+    }
+    if (next !== null) {
+      changed = true;
+      return next;
+    }
+    return message;
+  });
+  return changed ? patched : rebuilt;
+}
+
+// src/tool-pair-sanitizer.ts
+function sanitizeToolPairing(messages) {
+  const empty = { messages, droppedResults: [] };
+  if (!Array.isArray(messages) || messages.length === 0) return empty;
+  try {
+    const callIds = /* @__PURE__ */ new Set();
+    for (const raw of messages) {
+      const msg = raw;
+      if (!msg || typeof msg !== "object" || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+      for (const b2 of msg.content) {
+        if (b2 && b2.type === "toolCall" && typeof b2.id === "string" && b2.id.length > 0) callIds.add(b2.id);
+      }
+    }
+    let changed = false;
+    const out = [];
+    const droppedResults = [];
+    for (const raw of messages) {
+      const msg = raw;
+      if (msg && typeof msg === "object" && msg.role === "toolResult") {
+        const tcid = msg.toolCallId;
+        const label = typeof tcid === "string" && tcid.length > 0 ? tcid : "(missing toolCallId)";
+        if (typeof tcid !== "string" || tcid.length === 0 || !callIds.has(tcid)) {
+          droppedResults.push(label);
+          changed = true;
+          continue;
+        }
+      }
+      out.push(raw);
+    }
+    return changed ? { messages: out, droppedResults } : empty;
+  } catch {
+    return empty;
+  }
+}
+
+// src/outbound.ts
+function prepareHistoryForSend({ messages, blocks, entries, reasoningDrop, degenerationGuard }) {
+  const originals = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (entry.type === "message") {
+      originals.set(entry.id, entry.message);
+    } else if (entry.type === "custom_message") {
+      const content = typeof entry.content === "string" ? [{ type: "text", text: entry.content }] : entry.content;
+      originals.set(entry.id, { role: "user", content });
+    }
+  }
+  const rebuilt = inlineBlockSummaries(coreOutToAgentMessages(messages, originals), blocks);
+  const withoutThinking = dropCompressReasoning(rebuilt, reasoningDrop);
+  const droppedThinkingChars = withoutThinking === rebuilt ? 0 : countThinkingChars(rebuilt) - countThinkingChars(withoutThinking);
+  const cfg = resolveDegenerationGuard(degenerationGuard);
+  const tailRuns = cfg.enabled ? lastAssistantRuns([...originals.values()], cfg.minRun) : null;
+  const collapsed = collapseAssistantDegeneration(withoutThinking, cfg);
+  const maxCollapsedRun = collapsed.evidence.reduce((max, e) => e.runs.reduce((m2, r) => Math.max(m2, r.count), max), 0);
+  const recoveryRun = tailRuns ? [...tailRuns].sort((a, b2) => b2.count - a.count)[0] : void 0;
+  if (tailRuns) collapsed.messages.push(degenerationNotice(tailRuns));
+  return {
+    messages: collapsed.messages,
+    droppedThinkingChars,
+    collapsedMessages: collapsed.evidence.length,
+    maxCollapsedRun,
+    minRun: cfg.minRun,
+    recoveryRun
+  };
+}
+function finalizeOutboundMessages({ messages, liveMessages, liveTail, hasCompression }) {
+  const withTail = liveTail?.length ? [...messages, ...liveTail] : messages;
+  const withSystem = carryHostSystemMessages(withTail, liveMessages);
+  const sanitized = hasCompression ? sanitizeToolPairing(withSystem) : { messages: withSystem, droppedResults: [] };
+  return {
+    messages: sanitized.messages,
+    appendedTail: liveTail?.length ?? 0,
+    carriedSystems: withSystem === withTail ? 0 : liveMessages.filter((m2) => m2.role === "system").length,
+    droppedResults: sanitized.droppedResults
   };
 }
 
@@ -21948,7 +22071,6 @@ function inheritedNote(id, effective) {
 }
 
 // src/index.ts
-var latestUserOverLimit = /* @__PURE__ */ new Set();
 function createAcpExtension(adapter = {}) {
   return (pi) => {
     if (process.env.BILLION_CONTEXT_PROXY) {
@@ -22033,20 +22155,10 @@ function wireCompactionDisable(pi, runtime) {
 function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
   pi.on("session_start", async (_event, ctx) => {
     if (standDownIfProxied(ctx)) return;
-    runtime.store.invalidate();
-    runtime.clearNudgeTracking(ctx.sessionManager.getSessionId());
-    runtime.throttleFor(ctx.sessionManager.getSessionId()).reset();
-    runtime.clearCompressRetryTracking(ctx.sessionManager.getSessionId());
-    runtime.dropHostUsageSamples(ctx.sessionManager.getSessionId());
-    runtime.dropSizeDivergence(ctx.sessionManager.getSessionId());
-    runtime.dropTerminalEscape(ctx.sessionManager.getSessionId());
-    runtime.dropTruncationSkipped(ctx.sessionManager.getSessionId());
-    runtime.dropSentViewCount(ctx.sessionManager.getSessionId());
-    runtime.dropProjectionCache(ctx.sessionManager.getSessionId());
-    dropLiveOnlyTailCache(ctx.sessionManager.getSessionId());
+    runtime.startSession(ctx.sessionManager.getSessionId());
     const sid = ctx.sessionManager.getSessionId();
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.2.5" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.3.0" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {
@@ -22064,22 +22176,10 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
   });
   pi.on("session_shutdown", (_event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
-    runtime.clearDeadCompress(sid);
-    runtime.dropLastSentMessages(sid);
-    runtime.dropTokenScale(sid);
-    runtime.clearNudgeTracking(sid);
-    runtime.clearCompressRetryTracking(sid);
-    runtime.dropHostUsageSamples(sid);
-    runtime.dropSizeDivergence(sid);
-    runtime.dropTerminalEscape(sid);
-    runtime.dropTruncationSkipped(sid);
-    runtime.dropSentViewCount(sid);
-    runtime.dropProjectionCache(sid);
-    dropLiveOnlyTailCache(sid);
+    runtime.releaseSession(sid);
     closeLogStream();
   });
 }
-var lastDegNoticeKey = null;
 function wireBeforeProviderRequest(pi, runtime, standDownIfProxied) {
   pi.on("before_provider_request", async (event, ctx) => {
     if (runtime.refused) return;
@@ -22109,40 +22209,15 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
       await runtime.reloadConfig(ctx.cwd);
       const modelId = ctx.model?.id ?? "default";
       const { state, coreMessages, entries } = await runtime.stateFor(ctx);
-      const configBase = runtime.configFor(ctx);
+      const measurement = measureTurnInputs(runtime, ctx, { state, coreMessages, entries });
+      const { config, fullWindow, systemPromptTokens, imageTokens, fixedTokens, sentTokens, realUsage, realPromptTokens, predates, hostFloor } = measurement;
       const ov = runtime.overflowFor(sid);
-      let config = configBase;
-      const learnedWindow = ov.learnedWindowFor(modelId);
-      if (learnedWindow && learnedWindow > 0 && learnedWindow < config.modelContextLimit) {
-        config = { ...config, modelContextLimit: learnedWindow };
-        logInfo("overflow-selfheal", { sid, modelId, event: "window-recenter", resolved: configBase.modelContextLimit, learned: learnedWindow });
-      }
-      const headroomCap = resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct);
-      const fullWindow = config.modelContextLimit;
-      config = applyOutputHeadroom(config, ctx.model, headroomCap);
-      if (config.modelContextLimit !== fullWindow) {
-        logInfo("overflow-selfheal", { sid, event: "output-headroom", before: fullWindow, after: config.modelContextLimit, maxOutput: ctx.model?.maxTokens ?? 0, cap: headroomCap });
-      }
-      const coveredIds = collectCoveredMessageIds(state);
-      const realUsage = ctx.getContextUsage?.();
-      const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-      const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-      const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
-      const compressThinkingTokens = keptCompressThinkingTokens(
-        entries.flatMap((e) => e.type === "message" ? [e.message] : []),
-        runtime.reasoningDropFor(ctx)
-      );
-      const fixedTokens = systemPromptTokens + compressThinkingTokens;
-      const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + fixedTokens;
       let armedFloor = 0;
       if (ov.armed && config.modelContextLimit > 0) {
         ov.armed = false;
         armedFloor = Math.floor(config.modelContextLimit * 0.95);
         logWarn("overflow-selfheal", { sid, event: "armed-emergency", floor: armedFloor, limit: config.modelContextLimit });
       }
-      const { predates, netReclaimed } = compressionAnchorStaleness(entries, state.blocks, defaultCountTokens);
-      const realPromptTokens = measuredHostTokens(realUsage, entries);
-      const hostFloor = realPromptTokens > 0 ? Math.max(0, realPromptTokens - (predates ? netReclaimed : 0)) : 0;
       const hostUsageStable = !predates && realPromptTokens > 0 ? runtime.noteHostUsage(sid, realPromptTokens) : false;
       const calibrate = (base) => hostUsageStable ? Math.min(base, Math.ceil(realPromptTokens * 1.2)) : base;
       const applyFloors = (base) => Math.max(calibrate(base), hostFloor, armedFloor);
@@ -22202,13 +22277,11 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         turn.messages = userGuard.messages;
         const overLimit = config.modelContextLimit > 0 && userGuard.remainingTokens > config.modelContextLimit;
         logWarn("overflow", { sid, event: "latest-user-kept", id: userGuard.restoredId, remaining: userGuard.remainingTokens, limit: config.modelContextLimit });
-        if (overLimit && ctx.hasUI && !latestUserOverLimit.has(sid)) {
+        if (runtime.noteLatestUserOverLimit(sid, overLimit) && ctx.hasUI) {
           ctx.ui.notify("[ACP] \u26A0\uFE0F \u6700\u8FD1\u4E00\u6761\u7528\u6237\u6D88\u606F\u592A\u5927\uFF0C\u4E0D\u622A\u65AD\u5B83\u5C31\u653E\u4E0D\u8FDB\u4E0A\u4E0B\u6587\u3002\u8BF7\u7528\u539F\u751F\u538B\u7F29\u6216\u65B0\u4F1A\u8BDD\uFF0C\u6216\u62C6\u5C0F\u8FD9\u6761\u6D88\u606F\u3002", "warning");
         }
-        if (overLimit) latestUserOverLimit.add(sid);
-        else latestUserOverLimit.delete(sid);
       } else {
-        latestUserOverLimit.delete(sid);
+        runtime.noteLatestUserOverLimit(sid, false);
       }
       if (turn.state.emergencyTruncateLatch?.length || userGuard.restoredId) {
         rememberEmergencyTruncation(coreMessages, turn.messages, turn.state);
@@ -22283,30 +22356,26 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         blocksAfter: turn.state.blocks.length,
         activeAfter: turn.state.blocks.filter((b2) => b2.active).length
       });
-      const originalById = collectOriginals(entries);
-      let rebuilt = inlineBlockSummaries(coreOutToAgentMessages(turn.messages, originalById), turn.state.blocks);
       const reasoningDrop = runtime.reasoningDropFor(ctx);
-      const droppedThinking = dropCompressReasoning(rebuilt, reasoningDrop);
-      if (droppedThinking !== rebuilt) {
-        const droppedChars = countThinkingChars(rebuilt) - countThinkingChars(droppedThinking);
-        debug.event("reasoning-drop", { sid, droppedChars, drop: reasoningDrop.drop, threshold: reasoningDrop.threshold });
+      const history = prepareHistoryForSend({
+        messages: turn.messages,
+        blocks: turn.state.blocks,
+        entries,
+        reasoningDrop,
+        degenerationGuard: runtime.adapter.degenerationGuard
+      });
+      let rebuilt = history.messages;
+      if (history.droppedThinkingChars > 0) {
+        debug.event("reasoning-drop", { sid, droppedChars: history.droppedThinkingChars, drop: reasoningDrop.drop, threshold: reasoningDrop.threshold });
       }
-      rebuilt = droppedThinking;
-      const degCfg = resolveDegenerationGuard(runtime.adapter.degenerationGuard);
-      const tailRuns = degCfg.enabled ? lastAssistantRuns([...originalById.values()], degCfg.minRun) : null;
-      const deg = collapseAssistantDegeneration(rebuilt, degCfg);
-      if (deg.messages !== rebuilt) {
-        rebuilt = deg.messages;
-        const maxRun = deg.evidence.reduce((m2, e) => e.runs.reduce((x2, r) => Math.max(x2, r.count), m2), 0);
-        logWarn("degeneration", { sid, event: "runs-collapsed", msgs: deg.evidence.length, maxRun, minRun: degCfg.minRun });
-        debug.event("degeneration-collapsed", { sid, msgs: deg.evidence.length, maxRun });
+      if (history.collapsedMessages > 0) {
+        logWarn("degeneration", { sid, event: "runs-collapsed", msgs: history.collapsedMessages, maxRun: history.maxCollapsedRun, minRun: history.minRun });
+        debug.event("degeneration-collapsed", { sid, msgs: history.collapsedMessages, maxRun: history.maxCollapsedRun });
       }
-      if (tailRuns) {
-        rebuilt.push(degenerationNotice(tailRuns));
-        const top = [...tailRuns].sort((a, b2) => b2.count - a.count)[0];
+      if (history.recoveryRun) {
+        const top = history.recoveryRun;
         logInfo("degeneration", { sid, event: "recovery-notice", maxRun: top.count });
-        if (ctx.hasUI && lastDegNoticeKey !== `${sid}:${top.count}:${top.char.codePointAt(0)}`) {
-          lastDegNoticeKey = `${sid}:${top.count}:${top.char.codePointAt(0)}`;
+        if (ctx.hasUI && runtime.noteDegenerationNotice(sid, `${top.count}:${top.char.codePointAt(0)}`)) {
           ctx.ui.notify(`[ACP] previous turn ended in degenerate generation (${top.count}\xD7 repeat) \u2014 the repeated segment was truncated above and a recovery notice injected.`);
         }
       }
@@ -22377,22 +22446,21 @@ ${rendered.text}${example}`);
           ctx.ui.notify(`[ACP] compress failed ${outcome.count}\xD7 this turn \u2014 nudge paused until the next user message (emergency truncation still active).`);
         }
       }
-      const liveTail = liveOnlyTailCached(sid, entries, event.messages);
-      if (liveTail && liveTail.length > 0) {
-        rebuilt.push(...liveTail);
-        logInfo("live-only-tail", { sid, event: "appended", tail: liveTail.length, outMsgs: rebuilt.length });
+      const outbound = finalizeOutboundMessages({
+        messages: rebuilt,
+        liveMessages: event.messages,
+        liveTail: liveOnlyTailCached(sid, entries, event.messages),
+        hasCompression: turn.state.blocks.length > 0
+      });
+      rebuilt = outbound.messages;
+      if (outbound.appendedTail > 0) {
+        logInfo("live-only-tail", { sid, event: "appended", tail: outbound.appendedTail, outMsgs: rebuilt.length });
       }
-      const withHostSystem = carryHostSystemMessages(rebuilt, event.messages);
-      if (withHostSystem !== rebuilt) {
-        rebuilt = withHostSystem;
-        logInfo("system-passthrough", { sid, event: "carried", systems: event.messages.filter((m2) => m2.role === "system").length, outMsgs: rebuilt.length });
+      if (outbound.carriedSystems > 0) {
+        logInfo("system-passthrough", { sid, event: "carried", systems: outbound.carriedSystems, outMsgs: rebuilt.length });
       }
-      if (turn.state.blocks.length > 0) {
-        const sanitized = sanitizeToolPairing(rebuilt);
-        if (sanitized.droppedResults.length > 0) {
-          rebuilt = sanitized.messages;
-          logWarn("tool-pair-sanitize", { sid, event: "dropped-orphan-results", count: sanitized.droppedResults.length, droppedResults: sanitized.droppedResults });
-        }
+      if (outbound.droppedResults.length > 0) {
+        logWarn("tool-pair-sanitize", { sid, event: "dropped-orphan-results", count: outbound.droppedResults.length, droppedResults: outbound.droppedResults });
       }
       runtime.setLastSentMessages(sid, rebuilt);
       debug.event("context-out", { outMsgs: rebuilt.length, injected: turn.nudge?.shouldInject ?? false, emergency: turn.nudge?.breakdown?.emergencyOverride === 1 });
@@ -22494,9 +22562,6 @@ ${extractText(msg.content)}`;
     logWarn("overflow-selfheal", { sid, modelId, event: "no-body-arm", consecutive: decision.consecutive, ratio: decision.ratio, message: haystack.slice(0, 200) });
     if (ctx.hasUI) ctx.ui.notify(`[ACP] possible context overflow (4xx no-body error, ${decision.consecutive} consecutive) \u2014 forcing emergency compression next turn`);
   });
-  pi.on("session_shutdown", (_event, ctx) => {
-    runtime.overflowDrop(ctx.sessionManager.getSessionId());
-  });
 }
 function wireThrottleRetry(pi, runtime) {
   pi.on("message_end", (event, ctx) => {
@@ -22554,21 +22619,6 @@ function wireThrottleRetry(pi, runtime) {
   pi.on("input", (event, ctx) => {
     if (event.source !== "extension") runtime.throttleFor(ctx.sessionManager.getSessionId()).cancelSleep();
   });
-  pi.on("session_shutdown", (_event, ctx) => {
-    runtime.throttleDrop(ctx.sessionManager.getSessionId());
-  });
-}
-function collectOriginals(entries) {
-  const map = /* @__PURE__ */ new Map();
-  for (const entry of entries) {
-    if (entry.type === "message" && entry.message) {
-      map.set(entry.id, entry.message);
-    } else if (entry.type === "custom_message") {
-      const content = typeof entry.content === "string" ? [{ type: "text", text: entry.content }] : entry.content;
-      map.set(entry.id, { role: "user", content });
-    }
-  }
-  return map;
 }
 function collectCompressOutcomes(entries, startIndex) {
   const out = [];

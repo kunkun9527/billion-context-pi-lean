@@ -4,9 +4,7 @@ import type { AcpRuntime } from "./runtime.js";
 import { ACP_STATUS_CUSTOM_TYPE, ACP_EXPORT_CUSTOM_TYPE, ACP_RULE_CUSTOM_TYPE } from "./messages.js";
 import { exportSession, parseExportArgs } from "./export.js";
 import { defaultCountTokens, parseBlockIdArg, collectBlockContent, listRules, addRule, removeRule, clearRules, formatRulesList, resolveRuleLimits } from "acp-kernel";
-import { collectCoveredMessageIds, estimateTokens, collectImageTokens, modelSupportsImages, adjustedTokenCount } from "./tokens.js";
-import { measuredHostTokens, usageAnchorPredatesCompression } from "./floor-stale.js";
-import { applyOutputHeadroom, resolveOutputHeadroomCap } from "./overflow-selfheal.js";
+import { measureTurnInputs, displayTokenCount, adjustedTokenCount } from "./tokens.js";
 import { buildStatusPanel } from "acp-kernel/panel";
 import { resolveSurfaceMeta } from "./prompt-pack.js";
 import { cacheReportText } from "./cache-tool.js";
@@ -313,36 +311,14 @@ function resolveSessionDir(sm: ExtensionCommandContext["sessionManager"]): strin
 
 async function statusReport(runtime: AcpRuntime, ctx: ExtensionCommandContext): Promise<string> {
   const { state, coreMessages, entries } = await runtime.stateFor(ctx);
-  // Measure every panel percentage against the SAME real request limit the live
-  // context transform uses (window − output headroom), not the full window
-  // (issue #267).
-  const config = applyOutputHeadroom(runtime.configFor(ctx), ctx.model, resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct));
-  // Use pi's real context usage (anchored on provider usage) only for the
-  // panel's footer-scale display line; see sentTokens below for arbitration.
-  const realUsage = ctx.getContextUsage?.();
-  // Floor/arbitration only on a provider measurement (pi re-estimates the raw
-  // history after a context_edit); the footer-scale line below mirrors pi as-is.
-  const realTokens = measuredHostTokens(realUsage, entries ?? []);
-  const anchorStale = usageAnchorPredatesCompression(entries ?? []);
-
-  // Nudge arbitration on the SENT-VIEW scale — must match the context
-  // transform and acp_status: sent-view estimate floored at the host's real
-  // context usage (issue #257).
-  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
+  const measurement = measureTurnInputs(runtime, ctx, { state, coreMessages, entries });
+  const { config, systemPromptTokens, imageTokens, fixedTokens, sentTokens, realUsage, predates: anchorStale } = measurement;
+  // The session/footer ruler intentionally includes the unpruned history.
   const imageTokensTotal = [...imageTokens.values()].reduce((a, b) => a + b, 0);
   const thinkingTokensTotal = coreMessages.reduce((sum, m) => sum + (m.thinkingTokens ?? 0), 0);
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m) => m.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
-  const coveredIds = collectCoveredMessageIds(state);
-  const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
-  // View-based recount (issue #289): with active blocks the raw-view estimate
-  // can sit far above the sent view and mis-scale the panel's nudge — same
-  // arbitration as src/index.ts and acp_status.
-  const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
-  // issue #257: floor the meter at the host's real context usage so the
-  // panel's nudge matches the real decision (same as src/index.ts).
-  const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, realTokens) });
+  const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
+  const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
 
   // Shared kit surface renders the panel (dual accounting, viability
   // filtering, bars, block list with topic fallback). Host-specific inputs:

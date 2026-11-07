@@ -4,9 +4,7 @@ import type { AcpRuntime } from "./runtime.js";
 import { applyToolPromptOverrides, type ToolPromptOverrides } from "./surface.js";
 import { resolveSurfaceMeta } from "./prompt-pack.js";
 import { buildStatusReport, defaultCountTokens, formatRanges, viableRanges } from "acp-kernel";
-import { estimateTokens, collectCoveredMessageIds, collectImageTokens, modelSupportsImages, adjustedTokenCount } from "./tokens.js";
-import { measuredHostTokens, usageAnchorPredatesCompression } from "./floor-stale.js";
-import { applyOutputHeadroom, resolveOutputHeadroomCap } from "./overflow-selfheal.js";
+import { measureTurnInputs, displayTokenCount, adjustedTokenCount } from "./tokens.js";
 import { logThrow } from "./log.js";
 import { PROXY_STAND_DOWN_MESSAGE } from "./proxy-detect.js";
 
@@ -49,33 +47,14 @@ export function makeStatusTool(runtime: AcpRuntime, overrides?: ToolPromptOverri
 
 async function handleStatus(args: StatusArgs, runtime: AcpRuntime, ctx: ExtensionContext): Promise<string> {
   const { state, coreMessages, entries } = await runtime.stateFor(ctx);
-  // Same real request limit (window − output headroom) as the live context
-  // transform, so the reported percentages match the nudge bands (issue #267).
-  const config = applyOutputHeadroom(runtime.configFor(ctx), ctx.model, resolveOutputHeadroomCap(runtime.adapter.outputHeadroomMaxPct));
-  // Run the same pipeline (assign-refs → prune → hide-compress-calls → ...) that
-  // the context transform runs, so what acp_status reports matches what the
-  // model actually receives. Without this, consumed/hidden compress calls and
-  // pruned messages showed up in acp_status even though they never reached
-  // the model.
-  const coveredIds = collectCoveredMessageIds(state);
-  // Sent-view arbitration (same scale as the context transform), floored at
-  // the host's real context usage (issue #257; see src/index.ts).
-  const systemPromptText = ctx.getSystemPrompt?.() ?? "";
-  const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
-  const imageTokens = collectImageTokens(entries, modelSupportsImages(ctx.model));
-  const sentTokens = estimateTokens(coreMessages, coveredIds, imageTokens) + systemPromptTokens;
-  // View-based recount (issue #289): with active blocks the raw-view estimate
-  // can sit far above the sent view and mis-scale the nudge shown here — same
-  // arbitration as src/index.ts. The host floor (#257) applies on top of the
-  // winning base.
-  const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, systemPromptTokens);
-  const providerReal = measuredHostTokens(ctx.getContextUsage?.(), entries);
-  const anchorStale = usageAnchorPredatesCompression(entries);
+  const measurement = measureTurnInputs(runtime, ctx, { state, coreMessages, entries });
+  const { config, sentTokens, imageTokens, fixedTokens, realPromptTokens: providerReal } = measurement;
+  const viewSentTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({
     messages: coreMessages,
-    state,
+    state: structuredClone(state),
     config,
-    tokenCount: anchorStale ? viewSentTokens : Math.max(viewSentTokens, providerReal),
+    tokenCount: displayTokenCount(viewSentTokens, measurement),
   });
   const processed = turn.messages;
 

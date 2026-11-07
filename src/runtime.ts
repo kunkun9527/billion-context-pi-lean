@@ -20,11 +20,18 @@ import { ThrottleEpisode } from "./throttle-retry.js";
 import { logInfo, logWarn, setDebugEnabled } from "./log.js";
 import { OverflowEpisode } from "./overflow-selfheal.js";
 import { findOffBranchBlocks, markOffBranchBlocks, withBranchGuard } from "./branch-guard.js";
+import { dropLiveOnlyTailCache } from "./live-only-tail.js";
 
 type AgentMessage = SessionMessageEntry["message"];
 
 export interface AcpRuntime {
   core: CompressionCore;
+  /** Startup clears turn-local tracking, not learned overflow windows. */
+  startSession(sid: string): void;
+  /** Shutdown releases session-scoped episodes/caches; pending locks drain normally. */
+  releaseSession(sid: string): void;
+  noteLatestUserOverLimit(sid: string, active: boolean): boolean;
+  noteDegenerationNotice(sid: string, signature: string): boolean;
   /** Set when the model's traffic routes through the billion-context wire
    *  proxy (#296), which then owns compression.
    *  Once true, the extension stands down: the context transform, system-prompt
@@ -579,6 +586,51 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
     }
   }
 
+  const latestUserOverLimit = new Set<string>();
+  function noteLatestUserOverLimit(sid: string, active: boolean): boolean {
+    const first = active && !latestUserOverLimit.has(sid);
+    if (active) latestUserOverLimit.add(sid); else latestUserOverLimit.delete(sid);
+    return first;
+  }
+  const degenerationNotices = new Map<string, string>();
+  function noteDegenerationNotice(sid: string, signature: string): boolean {
+    if (degenerationNotices.get(sid) === signature) return false;
+    degenerationNotices.set(sid, signature);
+    return true;
+  }
+
+  function clearTurnTracking(sid: string): void {
+    clearNudgeTracking(sid);
+    clearCompressRetryTracking(sid);
+    dropHostUsageSamples(sid);
+    dropSizeDivergence(sid);
+    dropTerminalEscape(sid);
+    dropTruncationSkipped(sid);
+    dropSentViewCount(sid);
+    dropProjectionCache(sid);
+    dropLiveOnlyTailCache(sid);
+    latestUserOverLimit.delete(sid);
+    degenerationNotices.delete(sid);
+  }
+
+  function startSession(sid: string): void {
+    store.invalidate();
+    clearTurnTracking(sid);
+    throttleEpisodes.get(sid)?.reset();
+  }
+
+  function releaseSession(sid: string): void {
+    clearTurnTracking(sid);
+    clearDeadCompress(sid);
+    dropLastSentMessages(sid);
+    dropTokenScale(sid);
+    overflowDrop(sid);
+    throttleDrop(sid); // abort a pending sleep before releasing its episode
+    strictEchoLogged.delete(sid);
+    offBranchLogged.delete(sid);
+    // Do not delete a queued lock: its release closure owns the promise chain.
+  }
+
   async function save(state: CompressionState, ctx: ExtensionContext) {
     const sm = ctx.sessionManager;
     await store.save(state, sm.getSessionFile() ?? undefined, sm.getSessionId());
@@ -586,4 +638,4 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
 
   let refused = false;
   let refusalMessage: string | null = null;
-  return { core, store, get refused() { return refused; }, set refused(v: boolean) { refused = v; }, get refusalMessage() { return refusalMessage; }, set refusalMessage(v: string | null) { refusalMessage = v; }, get adapter() { return adapterRef; }, setAdapter: (a) => { adapterRef = a; }, get prompts() { return promptsRef; }, setPrompts: (p) => { promptsRef = p; }, markNudgeShown, nudgeShownFor, nudgeShownTokensFor, clearNudgeTracking, clearNudgeTokenStamps, markNudgeRecorded, nudgeRecordedFor, noteCompressOutcomes, compressRetryCappedFor, clearCompressRetryTracking, liveContextLimit, configFor, reasoningDropFor, reloadConfig, stateFor, save, acquireLock, overflowFor, overflowDrop, noteSentViewCount, peekSentViewCount, dropSentViewCount, dropProjectionCache, noteDeadCompress, clearDeadCompress, throttleFor, throttleDrop , noteTokenScale, dropTokenScale, noteHostUsage, dropHostUsageSamples, noteSizeDivergence, dropSizeDivergence, noteTerminalEscape, dropTerminalEscape, noteTruncationSkipped, dropTruncationSkipped, stripImagesFor, getCompressionModelRef, setCompressionModelRef, setLastSentMessages, getLastSentMessages, dropLastSentMessages };}
+  return { core, store, startSession, releaseSession, noteLatestUserOverLimit, noteDegenerationNotice, get refused() { return refused; }, set refused(v: boolean) { refused = v; }, get refusalMessage() { return refusalMessage; }, set refusalMessage(v: string | null) { refusalMessage = v; }, get adapter() { return adapterRef; }, setAdapter: (a) => { adapterRef = a; }, get prompts() { return promptsRef; }, setPrompts: (p) => { promptsRef = p; }, markNudgeShown, nudgeShownFor, nudgeShownTokensFor, clearNudgeTracking, clearNudgeTokenStamps, markNudgeRecorded, nudgeRecordedFor, noteCompressOutcomes, compressRetryCappedFor, clearCompressRetryTracking, liveContextLimit, configFor, reasoningDropFor, reloadConfig, stateFor, save, acquireLock, overflowFor, overflowDrop, noteSentViewCount, peekSentViewCount, dropSentViewCount, dropProjectionCache, noteDeadCompress, clearDeadCompress, throttleFor, throttleDrop , noteTokenScale, dropTokenScale, noteHostUsage, dropHostUsageSamples, noteSizeDivergence, dropSizeDivergence, noteTerminalEscape, dropTerminalEscape, noteTruncationSkipped, dropTruncationSkipped, stripImagesFor, getCompressionModelRef, setCompressionModelRef, setLastSentMessages, getLastSentMessages, dropLastSentMessages };}

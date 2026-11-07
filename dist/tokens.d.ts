@@ -1,5 +1,6 @@
 import { type CompressionCore, type CompressionState, type Config, type CoreMessage } from "acp-kernel";
-import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { AcpRuntime } from "./runtime.js";
 type AgentMessage = SessionMessageEntry["message"];
 export declare function collectCoveredMessageIds(state: {
     blocks: {
@@ -15,6 +16,25 @@ export declare function collectImageTokens(entries: {
     message?: AgentMessage;
 }[], visionCapable: boolean): Map<string, number>;
 export declare function estimateTokens(messages: CoreMessage[], coveredIds?: Set<string>, imageTokensById?: Map<string, number>): number;
+/** Shared ruler for send, display and compress preview. This only reads the
+ * overflow episode: consuming its one-shot arm, calibration samples and the
+ * previous-turn meter remain send-only policies in the context hook. */
+export declare function measureTurnInputs(runtime: AcpRuntime, ctx: ExtensionContext, { state, coreMessages, entries }: Awaited<ReturnType<AcpRuntime["stateFor"]>>): {
+    config: Config;
+    fullWindow: number;
+    systemPromptTokens: number;
+    imageTokens: Map<string, number>;
+    fixedTokens: number;
+    sentTokens: number;
+    realUsage: import("@earendil-works/pi-coding-agent").ContextUsage | undefined;
+    realPromptTokens: number;
+    predates: boolean;
+    hostFloor: number;
+};
+/** Display keeps its existing fresh-anchor floor; it neither samples live
+ * calibration nor consumes the armed emergency. Compress preview uses only
+ * the view count, since it resolves boundaries rather than sending a request. */
+export declare function displayTokenCount(viewTokens: number, measurement: ReturnType<typeof measureTurnInputs>): number;
 export declare function sentViewTokenCount(core: CompressionCore, messages: CoreMessage[], state: CompressionState, config: Config, prelim: number, imageTokensById?: Map<string, number>, systemPromptTokens?: number): {
     viewTokens: number;
     drifted: boolean;

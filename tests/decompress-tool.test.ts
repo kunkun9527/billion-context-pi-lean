@@ -359,15 +359,8 @@ test("decompress file modes add no re-fold hint and do not set restoredInline (#
   assert.notEqual(block?.restoredInline, true, "file mode must not flag the block as inline-restored");
 });
 
-// Full-loop refold acceptance (inline restore → re-compress same span → in-place
-// update) is NOT asserted here yet: the kernel's K2 gate is reached today only
-// through the consumed-range classification, which assumes a pruned view where
-// the originals are absent from input.messages (opencode world). Pi passes the
-// full projection + anchors, where the range classifies "ok" with zero NEW
-// messages and applySingleRange's livelock guard throws first. Tracked upstream
-// (acp-kernel, follow-up to #398); re-add this e2e when the kernel fix lands:
-// compress(m00001..m00001) after an inline restore must succeed, keep blockId
-// b1, store the fresh summary and clear restoredInline.
+// Full-loop inline refold coverage lives in compress-tool.test.ts (#540) and
+// compress-model.test.ts (dedicated summaries, including log-only recovery).
 
 test("Lean: message auto-file stems are filesystem-safe and collision-free", async () => {
   const { messageFileStem } = await import("../src/decompress-tool.js");

@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-11-07)
 
-- Summary rules: each `Open objectives:` item keeps the user's request close to verbatim and, when the user stated or approved one, its completion condition as `done when: … (ref)`; the end-of-range state adds `Dead ends (tried, failed):` with the conditions each approach was tried under, carried forward across refolds until a later message shows it worked, its conditions changed or the user reversed the decision (history, not a ban on retrying). Motivated by "You don't need long context" (arXiv 2611.05306, Appendix A): the most accuracy-preserving compactions keep the task, the completion criteria and failed approaches.
+- fix: rebuilding a lost sidecar keeps dedicated-model summaries after an inline restore and in-place refold, including cross-block refolds mixed with new blocks. Recovery records the actual changed blocks rather than matching request endpoints, and omits skipped overlapping ranges. Successful inline block restores are replayed in log order; file/message restores and failed attempts are not.
+- refactor: send, compression preview and status share window/overhead measurement. Preview now honors the learned window and output reserve; display and preview do not consume send-only overflow arms or calibration samples.
+- refactor: runtime owns per-session start/reset and shutdown/release cleanup, including notification deduplication. Outbound history rewriting and host-message finalization are explicit stages around the existing nudge policy, preserving live-tail and tool-pair ordering.
+- Summary quality (includes the previously unreleased `0b4d80a`): each `Open objectives:` item keeps the user's request close to verbatim and, when the user stated or approved one, its completion condition as `done when: … (ref)`; the end-of-range state adds `Dead ends (tried, failed):` with the conditions each approach was tried under, carried forward across refolds until a later message shows it worked, its conditions changed or the user reversed the decision (history, not a ban on retrying). Motivated by "You don't need long context" (arXiv 2611.05306, Appendix A): the most accuracy-preserving compactions keep the task, the completion criteria and failed approaches. Completion criteria are never invented; a failed approach is history, not a standing ban on retrying.
+
+- Regression coverage: native and Lean-wrapped recovery, single/cross-block refolds, mixed and overlapping ranges, measured/stale/estimated usage, read-only overflow handling, lifecycle isolation and outbound ordering. Five controlled old/new context fixtures produce identical outbound messages; the refactor keeps the Lean tool surface and resident prompt unchanged. Old logs that never recorded an actual dedicated refold summary cannot recover the missing text retroactively.
+- Development: archive the offline compression-nudge-threshold replay (`4b9bc2c`); this is analysis tooling, not a runtime threshold change.
 
 ## v0.2.5 (2026-11-04)
 

@@ -1,5 +1,5 @@
 import type { CompressionCore, CompressionState } from "acp-kernel";
-import { estimateTokensFast } from "acp-kernel";
+import { estimateTokensFast, markBlockRestoredInline, parseBlockIdArg } from "acp-kernel";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { logWarn } from "./log.js";
 import { entriesToCoreMessages } from "./messages.js";
@@ -22,8 +22,8 @@ import { normalizeRanges } from "./compress-tool.js";
  * the assistant toolCall arguments (ranges + summaries) and the toolResult
  * panel. Replaying those calls through the kernel's applyCompression on an
  * empty state reproduces the block structure without any host support.
- * Decompress calls are read-only for state (they restore content to a
- * file/inline and never mutate blocks), so compress calls alone are enough.
+ * Successful inline block restores also set a persisted refold marker. Replay
+ * those between compress calls; file/message restores do not mutate blocks.
  */
 
 interface CompressCall {
@@ -116,8 +116,8 @@ function parseCompressCall(toolCallId: string, arguments_: unknown, entryIndex: 
 /**
  * Replay successful compress calls from the session log against `state`
  * (normally a fresh createInitialState()). Failed, errored, no-op and
- * unparseable calls are skipped — applyCompression batches are atomic, so a
- * rejected call leaves state untouched. `report.blocks` tells the caller
+ * unparseable calls are skipped. Partial successes replay their recorded
+ * applied ranges when available. `report.blocks` tells the caller
  * whether anything was actually rebuilt (state is returned unchanged when
  * nothing applied).
  */
@@ -128,19 +128,45 @@ export function rebuildStateFromLog(input: {
   core: CompressionCore;
 }): RebuildResult {
   const { entries, core } = input;
-  const errored = new Set<string>();
-  const succeeded = new Set<string>();
-  const folded = new Map<string, unknown[]>();
+  const restoreCalls = new Map<string, string>();
   for (const entry of entries) {
     const m = entryMessage(entry);
-    if (!m || m.role !== "toolResult" || m.toolName !== "compress" || !m.toolCallId) continue;
-    if (m.isError === true) errored.add(m.toolCallId);
-    else {
+    if (m?.role !== "assistant") continue;
+    for (const call of toolCallsOf(m)) {
+      if (!call.id) continue;
+      const facade = call.arguments as { op?: unknown; args?: unknown } | undefined;
+      const restoreArgs = call.name === "decompress" ? call.arguments
+        : call.name === "acp_context" && facade?.op === "decompress" ? facade.args : undefined;
+      const args = restoreArgs as { blockId?: unknown; inline?: unknown; toFile?: unknown } | undefined;
+      if (args?.inline !== true || args.toFile || typeof args.blockId !== "string") continue;
+      const blockId = parseBlockIdArg(args.blockId.trim());
+      if (blockId) restoreCalls.set(call.id, blockId);
+    }
+  }
+  const restores: Array<{ entryIndex: number; blockId: string }> = [];
+  const succeeded = new Set<string>();
+  const folded = new Map<string, unknown[]>();
+  entries.forEach((entry, entryIndex) => {
+    const m = entryMessage(entry);
+    if (!m || m.role !== "toolResult" || !m.toolCallId || m.isError === true) return;
+    if (m.toolName === "decompress" || m.toolName === "acp_context") {
+      const blockId = restoreCalls.get(m.toolCallId);
+      // Old logs have no structured restore details. Require the actual success
+      // header as well as the arguments: failed/no-content restores are often
+      // returned as non-error text. Message and file restores have other headers.
+      const content = (m as { content?: unknown }).content;
+      const text = typeof content === "string" ? content : Array.isArray(content)
+        ? content.filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";
+      if (blockId && text.startsWith(`Restored block ${blockId} (`) && /^Restored block b\d+ \(\d+ items?\) inline:/.test(text)) {
+        restores.push({ entryIndex, blockId });
+      }
+    }
+    if (m.toolName === "compress") {
       succeeded.add(m.toolCallId);
       const recorded = foldedFromDetails((m as { details?: unknown }).details);
       if (recorded) folded.set(m.toolCallId, recorded);
     }
-  }
+  });
 
   const calls: CompressCall[] = [];
   entries.forEach((entry, entryIndex) => {
@@ -153,11 +179,16 @@ export function rebuildStateFromLog(input: {
       else logWarn("state-rebuild", { event: "unparseable-compress-call", toolCallId: call.id });
     }
   });
-  if (calls.length === 0) return { state: input.state, report: { blocks: input.state.blocks.length, callsApplied: 0, callsSkipped: 0, errors: [] } };
-
   let state = input.state;
+  let nextRestore = 0;
+  const restoreThrough = (entryIndex: number) => {
+    while (nextRestore < restores.length && restores[nextRestore]!.entryIndex < entryIndex) {
+      state = markBlockRestoredInline(state, restores[nextRestore++]!.blockId).state;
+    }
+  };
   const report: RebuildReport = { blocks: 0, callsApplied: 0, callsSkipped: 0, errors: [] };
   for (const call of calls) {
+    restoreThrough(call.entryIndex);
     let applied: ReturnType<CompressionCore["applyCompression"]>;
     try {
       // Live pipeline order: the context event first runs processTurn (which
@@ -190,6 +221,7 @@ export function rebuildStateFromLog(input: {
     state = applied.state;
     report.callsApplied += 1;
   }
+  restoreThrough(entries.length);
   report.blocks = state.blocks.length;
   return { state, report };
 }
