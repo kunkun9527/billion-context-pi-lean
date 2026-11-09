@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1 (2026-11-09)
+
+- fix: a `compress.maxContextLimit` below 45% (e.g. the documented `"35%"` recipe) no longer triggers the acp-kernel warning `nudge.minContextLimitPct must not exceed nudge.maxContextLimitPct`. The kernel's cold-start gate (`minContextLimitPct`, 45%, not user-configurable) is lowered to `maxContextLimit` when it is set below it. Above `maxContextLimit` the pressure branch already decides, so no nudge decision changes. Nothing changes when `maxContextLimit` is unset or at least 45%. Docs: the cold-start gate does not affect T2/T3 escalation.
+
 ## v0.3.0 (2026-11-07)
 
 - fix: rebuilding a lost sidecar keeps dedicated-model summaries after an inline restore and in-place refold, including cross-block refolds mixed with new blocks. Recovery records the actual changed blocks rather than matching request endpoints, and omits skipped overlapping ranges. Successful inline block restores are replayed in log order; file/message restores and failed attempts are not.

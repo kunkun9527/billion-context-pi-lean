@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-X77RHSF6.js";
+} from "./chunk-4YGDV6IP.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -12249,7 +12249,10 @@ function resolveConfig(adapter, liveContextLimit, provider, modelId) {
   };
   const config = defaultConfig(limit, overrides);
   const c = resolveCompress(adapter.compress, provider, modelId);
-  if (c.maxContextLimit !== void 0) config.nudge.maxContextLimitPct = parsePercent(c.maxContextLimit);
+  if (c.maxContextLimit !== void 0) {
+    config.nudge.maxContextLimitPct = parsePercent(c.maxContextLimit);
+    config.nudge.minContextLimitPct = Math.min(config.nudge.minContextLimitPct, config.nudge.maxContextLimitPct);
+  }
   if (c.emergencyThresholdPercent !== void 0) {
     const pct3 = parsePercent(c.emergencyThresholdPercent);
     config.nudge.emergencyThresholdPct = pct3;
@@ -20172,7 +20175,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.3.0";
+    return "0.3.1";
   } catch {
     return "dev";
   }
@@ -21038,7 +21041,7 @@ async function statusReport(runtime, ctx) {
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m2) => m2.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
   const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
-  const versionStr = "0.3.0" ? `billion-context-pi@${"0.3.0"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const versionStr = "0.3.1" ? `billion-context-pi@${"0.3.1"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -22158,7 +22161,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     runtime.startSession(ctx.sessionManager.getSessionId());
     const sid = ctx.sessionManager.getSessionId();
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.3.0" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.3.1" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {

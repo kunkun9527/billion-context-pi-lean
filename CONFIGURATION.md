@@ -513,11 +513,11 @@ How compression actually gets triggered (three layers):
 
 1. **Growth layer** (day-to-day driver) — **absolute tokens, independent of `modelContextLimit` by design**: a soft nudge fires once cumulative growth since the last anchor (session start / last compress / post-shrink reset) passes the cadence floor (`max(20k, 45% × nudgeGrowthTokens)` ≈ 22.5k by default), provided there is enough effective compressible content (~`nudgeGrowthTokens`). Keeping the window large does NOT delay this layer.
 2. **Pressure layer** — the only %-anchored part: `usage ≥ maxContextLimit` (default 75%) → forced nudge every turn; ≥ 95% → emergency truncation. Scales with `modelContextLimit`.
-3. **Qualification layer** — kernel default 45%, not exposed here; gates only the turn-1 cold-start ticket and T2/T3 block-count escalation.
+3. **Qualification layer** — kernel default 45%, not exposed here; gates only the cold-start ticket (the first nudge of a session, before any growth anchor exists). When `maxContextLimit` is set below it, the extension lowers it to `maxContextLimit`; above that point the pressure layer already decides, so no nudge changes.
 
 Notes:
 
-- Setting `maxContextLimit` below 45% works correctly (the layers gate independent paths), but acp-kernel logs one validation warning per turn — log noise only, thresholds unaffected.
+- Setting `maxContextLimit` below 45% is supported. Before v0.3.1 acp-kernel logged `nudge.minContextLimitPct must not exceed nudge.maxContextLimitPct` for it; that was log noise only, thresholds were unaffected.
 - Behavior delta vs the old low-limit config: the forced zone moves from 75%×old-limit up to chosen-%×native-window, and emergency truncation moves from ~95%×old-limit back to the true edge (~95%×native). Between the growth anchors and the forced zone, context may drift below your target — that drift is the price of elasticity. A strict ceiling *and* burst headroom simultaneously needs structure-aware compression, not a smaller denominator.
 - All of this resolves through the three-level cascade below (`models > providers > global`), so different targets can coexist across models.
 

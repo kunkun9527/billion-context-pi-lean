@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { validateConfig } from "acp-kernel";
 import { resolveConfig, resolveCompress, mergeCompress, resolveRepetitionGuard, REPETITION_GUARD_DEFAULTS, type AdapterConfig } from "../src/config.js";
 
 const EMPTY: AdapterConfig = {};
@@ -62,6 +63,24 @@ test("resolveConfig maps compress.maxContextLimit (number) to nudge.maxContextLi
 test("resolveConfig maps compress.maxContextLimit (percent string) to nudge.maxContextLimitPct", () => {
   const cfg = resolveConfig({ compress: { maxContextLimit: "80%" } }, 1_000_000);
   assert.equal(cfg.nudge.maxContextLimitPct, 0.8);
+});
+
+test("resolveConfig lowers the kernel cold-start gate to a maxContextLimit below it, so validateConfig stays silent", () => {
+  for (const v of [0.4, "35%"] as const) {
+    const cfg = resolveConfig({ compress: { maxContextLimit: v } }, 1_000_000);
+    assert.equal(cfg.nudge.minContextLimitPct, cfg.nudge.maxContextLimitPct, `min follows max for ${v}`);
+    assert.deepEqual(validateConfig(cfg), [], `no validation warning for ${v}`);
+  }
+  const model = resolveConfig(
+    { compress: { providers: { p: { models: { m: { maxContextLimit: 0.3 } } } } } },
+    1_000_000, "p", "m",
+  );
+  assert.equal(model.nudge.minContextLimitPct, 0.3, "model-level override is clamped too");
+});
+
+test("resolveConfig keeps the kernel cold-start gate when maxContextLimit is unset or above it", () => {
+  assert.equal(resolveConfig(EMPTY, 1_000_000).nudge.minContextLimitPct, 0.45);
+  assert.equal(resolveConfig({ compress: { maxContextLimit: 0.8 } }, 1_000_000).nudge.minContextLimitPct, 0.45);
 });
 
 test("resolveConfig maps compress.emergencyThresholdPercent to both nudge.emergencyThresholdPct and truncate.threshold", () => {

@@ -312,7 +312,14 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
   };
   const config = defaultConfig(limit, overrides);
   const c = resolveCompress(adapter.compress, provider, modelId);
-  if (c.maxContextLimit !== undefined) config.nudge.maxContextLimitPct = parsePercent(c.maxContextLimit);
+  if (c.maxContextLimit !== undefined) {
+    config.nudge.maxContextLimitPct = parsePercent(c.maxContextLimit);
+    // The kernel's cold-start gate (minContextLimitPct, default 45%) is not
+    // exposed; a documented maxContextLimit below it would trip validateConfig
+    // every turn. Above max the pressure branch already fires, so clamping
+    // changes no nudge decision, only drops the warning.
+    config.nudge.minContextLimitPct = Math.min(config.nudge.minContextLimitPct, config.nudge.maxContextLimitPct);
+  }
   if (c.emergencyThresholdPercent !== undefined) {
     const pct = parsePercent(c.emergencyThresholdPercent);
     config.nudge.emergencyThresholdPct = pct;

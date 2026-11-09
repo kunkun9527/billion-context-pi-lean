@@ -507,11 +507,11 @@
 
 1. **增长层**（日常主力）——**绝对 token 数，按设计独立于 `modelContextLimit`**：自上一个锚点（会话开始 / 上次压缩 / 收缩后重置）以来的累计增长越过节奏下限（`max(20k, 45% × nudgeGrowthTokens)`，默认 ≈ 22.5k）、且有效可压缩量足够（约 `nudgeGrowthTokens`）时，发一次软 nudge。把窗口设大**不会**推迟这一层。
 2. **压力层**——唯一按 % 锚定的部分：`usage ≥ maxContextLimit`（默认 75%）→ 每轮强制 nudge；≥ 95% → 紧急截断。随 `modelContextLimit` 缩放。
-3. **资格层**——内核默认 45%，本扩展未暴露；只管首轮冷启动门票与 T2/T3 块数升级。
+3. **资格层**——内核默认 45%，本扩展未暴露；只管冷启动门票（会话里还没有增长锚点时的第一次 nudge）。`maxContextLimit` 设得比它低时，扩展会把它降到 `maxContextLimit`；超过这一点后由压力层决定，所以不会改变任何 nudge。
 
 注意：
 
-- `maxContextLimit` 设到 45% 以下功能正确（各层门控相互独立），但 acp-kernel 每轮会打一条校验告警——纯日志噪音，阈值不受影响。
+- 支持把 `maxContextLimit` 设到 45% 以下。v0.3.1 之前 acp-kernel 会为此打出 `nudge.minContextLimitPct must not exceed nudge.maxContextLimitPct` 告警；那只是日志噪音，阈值不受影响。
 - 与旧的「低限制」配置相比的行为差异：强制区从 75%×旧限制 上移到 所选%×原生窗口，紧急截断从 ~95%×旧限制 回到真实边缘（~95%×原生）。增长锚点与强制区之间，上下文可能漂移到目标之下——这个漂移就是弹性的代价。若需要同时满足「严格上限 + 突发余量」，需要结构感知压缩，而不是缩小分母。
 - 以上全部通过下文的三级级联（`models > providers > global`）解析，不同模型可以共存不同目标。
 
