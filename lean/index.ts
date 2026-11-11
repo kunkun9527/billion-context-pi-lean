@@ -45,6 +45,7 @@ const DEDICATED_PROMPT_LINE = "\n- A dedicated model writes compress summaries: 
 const DEDICATED_MARKER = "Dedicated summary model";
 
 const COMPRESS_DONE_HINT = "New block summaries stay visible in this call's arguments; do not decompress them to re-read.";
+const COMPRESS_DESCRIPTION = "Replace consumed conversation ranges with self-contained summaries using mNNNNN or bN refs.";
 
 const LOW_FREQUENCY_TOOLS = ["decompress", "search_context", "acp_status", "acp_cache"] as const;
 const LOW_FREQUENCY_SET = new Set<string>(LOW_FREQUENCY_TOOLS);
@@ -365,12 +366,12 @@ function wrapCompress(tool: CapturedTool): CapturedTool & { exposure: "model-onl
     // ACP finds compress results by toolName in the session log; a call nested in a codemode
     // script is recorded under codemode, so keep compress declared and out of scripts.
     exposure: "model-only",
-    get description() {
-      const upstreamDescription = String(tool.description ?? "");
-      return upstreamDescription.includes(DEDICATED_MARKER)
-        ? "Replace consumed ranges using refs. A dedicated model writes the detailed summary; provide a meaningful fallback of 1-2 sentences preserving goals, exact paths/versions/errors, decisions, current state, and TODOs."
-        : "Replace consumed conversation ranges with self-contained summaries using mNNNNN or bN refs.";
-    },
+    // Constant on purpose: Pi snapshots declarations before acp.json loads and
+    // re-snapshots on any setActiveTools/resume. A config-dependent description
+    // flips once, Pi re-declares compress at the END of the tool list, and the
+    // whole cached prefix (tools onward) is lost. The per-turn system prompt
+    // carries the dedicated-model rule instead (DEDICATED_PROMPT_LINE).
+    description: COMPRESS_DESCRIPTION,
     promptSnippet: "",
     promptGuidelines: [],
     prepareArguments: (args: unknown) => prepareCompressArguments(tool.prepareArguments ? tool.prepareArguments(args) : args),

@@ -229,7 +229,7 @@ test("keeps compress direct, retains concise critical descriptions, and rewrites
   // details hold the recorded fold used to rebuild state: never rewritten.
   assert.equal(result.details.acpFolded.ranges[0].summary, "Run acp_status, then use search_context or decompress to retrieve details.");
 });
-test("compress description keeps a meaningful fallback contract when a dedicated model is active", async () => {
+test("dedicated model: compress declaration stays constant and the per-turn prompt carries the fallback rule", async () => {
   const pi = createPi();
   const upstream = (target) => {
     target.registerTool({
@@ -248,9 +248,9 @@ test("compress description keeps a meaningful fallback contract when a dedicated
   };
   createLeanAcpExtension(upstream)(pi);
   const description = getTool(pi, "compress").description;
-  assert.match(description, /dedicated model/i);
-  assert.match(description, /meaningful fallback of 1-2 sentences/i);
-  assert.match(description, /exact paths\/versions\/errors/i);
+  // Same declaration as without a dedicated model, so a Pi re-snapshot after
+  // acp.json loads never re-declares compress (that reorders tools and breaks the cache).
+  assert.equal(description, "Replace consumed conversation ranges with self-contained summaries using mNNNNN or bN refs.");
   assert.doesNotMatch(description, /bare placeholder|summary: "compressed"/i);
   const result = await getTool(pi, "compress").execute("c1", {}, undefined, undefined, {});
   assert.equal(result.content[0].text, "ok", "no completion hint when nothing was folded");
@@ -289,10 +289,15 @@ test("per-turn dedicated-model rule follows the live upstream description, not a
     const [hook] = pi.handlers.get("before_agent_start");
     const turn = async () => (await hook({ systemPrompt: "base prompt" })).systemPrompt;
     const rule = /dedicated model writes compress summaries/;
+    const declared = () => getTool(pi, "compress").description;
+    const atRegistration = declared();
 
     assert.doesNotMatch(await turn(), rule, "off at registration");
     dedicated = true; // acp.json loads after registration (session_start)
     assert.match(await turn(), rule, "enabled after registration");
+    // A re-snapshot after config load must see the same declaration, or Pi
+    // re-declares compress at the end of the tool list and the cache prefix breaks.
+    assert.equal(declared(), atRegistration, "compress declaration stays stable across config load");
     dedicated = false;
     assert.doesNotMatch(await turn(), rule, "disabled again mid-session");
   } finally {
