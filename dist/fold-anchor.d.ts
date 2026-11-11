@@ -1,4 +1,9 @@
-export declare function foldAnchorEnabled(): boolean;
+/** The anchor applies only when enabled in config AND the live model is a
+ *  Claude model on a `*responses` API (the wire format handled here). */
+export declare function claudeFoldAnchorApplies(enabled: boolean | undefined, model: {
+    api?: string;
+    id?: string;
+} | undefined): boolean;
 /** Earliest ref by numeric order (refs may outgrow 5 digits). */
 export declare function earliestRef(refs: string[]): string | undefined;
 export interface FoldAnchorOutcome {

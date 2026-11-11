@@ -10,7 +10,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import type { NudgeDecision, CompressionBlock, Prompts } from "acp-kernel";
 import { renderNudgeText, resolvePrompts, defaultPrompts, viableRanges } from "acp-kernel";
-import type { AdapterConfig } from "./config.js";
+import { resolveCompress, type AdapterConfig } from "./config.js";
 import { createRuntime, type AcpRuntime } from "./runtime.js";
 import { makeCompressTool, isCompressSuccessText, isCompressNoopText } from "./compress-tool.js";
 import { SESSION_MODEL_REF } from "./compress-model.js";
@@ -27,12 +27,17 @@ import { liveOnlyTailCached } from "./live-only-tail.js";
 import { prepareHistoryForSend, finalizeOutboundMessages } from "./outbound.js";
 import { buildAcpSystemPrompt } from "./system-prompt.js";
 import { applyStripImages } from "./strip-images.js";
-import { applyFoldAnchor, earliestRef, foldAnchorEnabled } from "./fold-anchor.js";
+import { applyFoldAnchor, claudeFoldAnchorApplies, earliestRef } from "./fold-anchor.js";
 
-// Experimental (ACP_FOLD_ANCHOR=1): earliest viable compressible start ref per
-// session, recorded by the context transform for the next provider request.
+// compress.claudeFoldAnchor: earliest viable compressible start ref
+// per session, recorded by the context transform for the next provider request.
 const foldAnchorStart = new Map<string, string | undefined>();
 const foldAnchorLogged = new Map<string, string>();
+
+function claudeFoldAnchorOn(runtime: AcpRuntime, ctx: ExtensionContext): boolean {
+  const m = ctx.model as { provider?: string; id?: string; api?: string } | undefined;
+  return claudeFoldAnchorApplies(resolveCompress(runtime.adapter.compress, m?.provider, m?.id).claudeFoldAnchor, m);
+}
 import { wireToolGuardrails } from "./tool-guardrails.js";
 import { wireIdleCompact, type IdleCompactHandle } from "./idle-compact.js";
 import { makeConfigCommand } from "./config-panel.js";
@@ -236,7 +241,7 @@ function wireBeforeProviderRequest(pi: ExtensionAPI, runtime: AcpRuntime, standD
         body = outcome.body;
       }
     }
-    if (foldAnchorEnabled() && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "")) {
+    if (claudeFoldAnchorOn(runtime, ctx)) {
       const startRef = foldAnchorStart.get(sid);
       const anchor = applyFoldAnchor(body ?? event.payload, startRef);
       const outcome = { sid, startRef: startRef ?? null, index: anchor.index ?? null, reason: anchor.reason ?? "marked" };
@@ -390,7 +395,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       });
 
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
-      if (foldAnchorEnabled()) {
+      if (claudeFoldAnchorOn(runtime, ctx)) {
         const ranges = viableRanges(turn.nudge?.compressibleRanges ?? []);
         foldAnchorStart.set(sid, earliestRef(ranges.map((r) => r.startRef)));
       }

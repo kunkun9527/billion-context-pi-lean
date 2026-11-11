@@ -3,13 +3,14 @@
 本次任务的目标是：多次压缩之后，提高 Claude 的 prompt-cache 命中率。基准提交是 v0.3.1 的 `535c090`。
 
 - **compress 声明固定**（已提交）：`lean/index.ts` 中定义了常量 `COMPRESS_DESCRIPTION`。旧实现的描述会随 acp.json 是否配置了专用模型而变。Pi 在加载配置之前就记下了工具声明，之后只要重新读取一次工具列表，就会把 compress 当成新工具重新声明，并排到列表末尾，工具定义之后的整段缓存前缀因此全部失效。最近的 586 个会话里有 42 个出现过这种情况。专用模型的兜底规则现在只写在每轮的系统提示里（`DEDICATED_PROMPT_LINE`）。经用户同意，`lean/tests/facade.test.mjs` 中原先要求“描述必须包含兜底规则”的断言，改成了断言两种模式下声明保持一致。
-- **Fold anchor**（已提交，实验性，默认关闭）：实现在 `src/fold-anchor.ts`，接入点在 `src/index.ts`。只有同时满足以下条件才生效：设置了 `ACP_FOLD_ANCHOR=1`、走 `*responses` API、模型名包含 `claude`。生效时，会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control`，让压缩后仍保持不变的前缀有机会继续命中缓存。
+- **Fold anchor**（默认开启，用户长期使用）：实现在 `src/fold-anchor.ts`，接入点在 `src/index.ts`。默认开启，用 acp.json 的 `compress.claudeFoldAnchor: false` 或设置面板关闭，和其他 `compress` 字段一样可以按 provider 或 model 覆盖（最初版本用的是环境变量 `ACP_FOLD_ANCHOR=1`，已改为配置项）。只有同时满足以下条件才生效：配置未设为 `false`、走 `*responses` API、模型名包含 `claude`。用户的 `~/.pi/acp.json` 已在全局开启。生效时，会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control`，让压缩后仍保持不变的前缀有机会继续命中缓存。
 - `docs/REDESIGN.md`：一份更早的重写方案，没有纳入版本管理。用户的结论是暂不重写。
 
 ## 已验证
 
 - `npm run check && git diff --check`：结果见本次提交前的后台日志。
 - 真实运行：在临时目录里用 Haiku 5.5 新建会话，执行一次工具调用，再用 `-c` 恢复会话，然后检查 session 中 `role: system` 的条目。旧代码出现了 `added ['compress'] removed ['compress']`，新代码只有一条初始声明。
+- 线路实测（Haiku 5.5，直接请求本地 CLIProxyAPI 8.0.67）：构造两次请求，第一条 user 消息之后放一段约 2.2 万 token 的稳定前缀 A，后面的内容在第二次请求里换成一句摘要，模拟折叠。不加锚点时，第二次请求的 `cached_tokens` 为 0；在 A 上加锚点后，`/backend-api/codex/responses`（`cliproxyapi-codex-responses`）读到 22,100，`/v1/responses`（Pi 内置的 `openai-responses`）读到 23,404。两条线路都不报错。注意：把 A 放在第一条 user 消息时，不加锚点也能全部命中，因为代理的 cloak 本来就会在第一条 user 消息上打断点。其他代理（例如别家的 Responses 接口）没有条件测试。
 - Haiku 实验：开启 fold anchor 后，命中率从 74.6% 升到 77.5%。按 `input + 2×write + 0.1×read` 计算的费用指数下降约 9.7%。第 3 次压缩后，第一个请求的缓存读取量从 10.9K 升到 15.2K。两组运行生成的内容并不相同，所以这不是严格的因果结论。
 
 ## 已决定不做
@@ -33,4 +34,4 @@
 
 ## 单一步骤
 
-日常使用 Opus 时，启动 Pi 前设置 `ACP_FOLD_ANCHOR=1`，不需要额外花钱。几天后统计每次 fold 之后第一个请求的 `cacheRead`，看是否高于之前统计的中位数 10.5K。如果有提升且没有异常，再考虑默认开启。
+`~/.pi/acp.json` 已开启 `compress.claudeFoldAnchor`，日常照常使用 Opus 即可，不需要额外花钱。几天后统计每次 fold 之后第一个请求的 `cacheRead`，看是否高于之前统计的中位数 10.5K。已按用户决定默认开启；它只作用于 Claude + `*responses` API。

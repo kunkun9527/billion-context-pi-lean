@@ -32,6 +32,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 | 压缩规则 | 每次压缩提醒都发给主模型（约 1,460 token；`promptPack: "lean"` 时约 720） | 只发给摘要模型，不再占用主模型的上下文；主模型的压缩提醒里只有一段约 220 token 的选范围说明\* |
 | 摘要质量 | 通用压缩规则，只检查长度 | 另外：用户的要求和工具显示的内容分开记；待办分成用户目标、建议、未核实风险三类。调用失败或不合格的摘要不会折叠，这段留待下次再压缩 |
 | 离开一阵再回来 | 第一条请求按无缓存价格重写整段长上下文 | **[空闲压缩](#空闲压缩idle-compact)**：缓存过期前给模型一次压缩机会，回来后发出的请求更短 |
+| Claude 压缩后的提示缓存 | 在 `*responses` API 上自己不加缓存标记；CLIProxyAPI 这类代理只缓存系统提示词和最新一条消息，每次折叠后，没有变化的较早前缀也要按无缓存价格重写 | **Claude fold anchor**（默认开启，仅 Claude；设置面板里可关，对应 `acp.json` 的 `compress.claudeFoldAnchor`）：额外标记下次折叠不会动到的前缀，让它保持缓存（[CONFIGURATION.zh-CN.md](CONFIGURATION.zh-CN.md)） |
 | 修改设置 | 手动编辑 `acp.json` | **[`/acp-config`](#配置) 设置面板**：在 TUI 里选值，立即生效、不用重启；`acp.json` 照常可用 |
 | 工具和常驻提示词 | 5 个上下文工具 + 3 个子代理工具，约 8,700 token（`promptPack: "lean"` 时约 4,900） | `compress` + `acp_context`，486 token（[对比](#上下文占用对比)）。常驻提示词只保留调用前必须知道的规则，其余说明随压缩提醒、报错和工具结果给出 |
 | 系统提示词 | 返回整份系统提示词，在 Pi 1.x 上会丢掉之后加载的扩展追加的提示词 | 作为独立段落注入，其他扩展的内容保留 |
@@ -104,6 +105,7 @@ pi install npm:billion-context-pi-lean
 | Context threshold（上下文阈值） | 上下文占到模型窗口的这个比例以上，压缩提醒不再等 Nudge interval：只要能腾出的空间达到 Minimum benefit 就提醒。调低让上下文常保小；调高允许它更满。它不是硬上限。 | 75% |
 | Nudge interval（提醒间隔） | 上下文没到 Context threshold 时，要等可压缩的旧内容攒到大约这么多 token 才提醒一次。调大：提醒少，每次压得多；调小：频繁小压缩，上下文更精简。 | 50K |
 | Minimum benefit（最小收益） | 能腾出的空间少于这个值时不提醒，也不做空闲压缩：只为几千 token 去重写、打断缓存不划算。 | 5K 与窗口 1% 中较大者 |
+| Claude fold anchor（Claude 折叠锚点） | 只对走 `*responses` API 的 Claude 模型生效：额外给下次压缩不会动到的那部分历史加缓存标记，折叠后它仍留在提示缓存里。其他模型忽略。保存为 `compress.claudeFoldAnchor`。 | `on` |
 | Debug log（调试日志） | 在 `~/.pi/acp.log` 里额外记录详细事件，排查问题用。错误和主要事件始终会记。 | `off` |
 
 Context threshold、Nudge interval、Minimum benefit 跟模型的窗口和价格有关，所以面板只为**当前模型**设置它们；要改别的模型，先切换过去。选 `inherit`（继承）会去掉这个模型自己的值，改用 `acp.json` 里 provider 级或全局的值，都没有就用默认值。

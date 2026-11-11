@@ -51,6 +51,12 @@ export interface CompressSettings {
   /** How many of the MOST RECENT messages keep their image payloads when
    *  `stripImages` is enabled. Default: 5. Ignored when stripImages is off. */
   stripImagesKeepRecent?: number;
+  /** Opt-in Claude prompt-cache anchor (see src/fold-anchor.ts). When true and
+   *  the live model is a Claude model on a `*responses` API, the last text part
+   *  before the earliest compressible range gets `cache_control`, so the prefix
+   *  that survives the next fold stays a cache hit. Default: false. Ignored for
+   *  every other model or API. */
+  claudeFoldAnchor?: boolean;
 }
 
 /** Per-provider compression overrides. Carries the same tuning fields as the
@@ -265,6 +271,7 @@ export function mergeCompress(
     promptPack: model?.promptPack ?? provider?.promptPack ?? global?.promptPack,
     stripImages: model?.stripImages ?? provider?.stripImages ?? global?.stripImages,
     stripImagesKeepRecent: model?.stripImagesKeepRecent ?? provider?.stripImagesKeepRecent ?? global?.stripImagesKeepRecent,
+    claudeFoldAnchor: model?.claudeFoldAnchor ?? provider?.claudeFoldAnchor ?? global?.claudeFoldAnchor,
   };
 }
 

@@ -153,6 +153,20 @@ export const PANEL_ITEMS: PanelItem[] = [
   modelKeyItem("nudgeGrowthTokens", "Nudge interval", "Below Context threshold, the compress nudge waits until about this many tokens of old, compressible content have piled up (default 50K). Bigger: fewer nudges, more folded at once. Current model only.", ["30K", "50K", "70K", "100K", "150K", "200K"], k, parseK),
   modelKeyItem("minPressureBenefitTokens", "Minimum benefit", "No compress nudge, and no idle compact turn, when less than this could be reclaimed (default: larger of 5K and 1% of the window). Current model only.", ["5K", "10K", "20K", "30K", "50K"], k, parseK),
   {
+    id: "claudeFoldAnchor",
+    label: "Claude fold anchor",
+    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
+    values: () => [ON, OFF],
+    read: (a) => (a.compress?.claudeFoldAnchor === false ? OFF : ON),
+    write(raw, value) {
+      if (value === OFF) obj(raw, "compress").claudeFoldAnchor = false;
+      else {
+        delete obj(raw, "compress").claudeFoldAnchor;
+        prune(raw, ["compress"]);
+      }
+    },
+  },
+  {
     id: "debug",
     label: "Debug log",
     description: "Write detailed events to ~/.pi/acp.log for troubleshooting. Errors and main events are always logged.",

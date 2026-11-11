@@ -1,5 +1,5 @@
-// Experimental Claude cache anchor for the Responses wire format (opt-in via
-// ACP_FOLD_ANCHOR=1). The next fold most likely starts at the earliest
+// Claude cache anchor for the Responses wire format (on by default; turn off
+// with acp.json `compress.claudeFoldAnchor: false`). The next fold most likely starts at the earliest
 // compressible range, so everything before it survives that fold unchanged.
 // CLIProxyAPI only places breakpoints on the system prompt and the latest
 // message, so that stable prefix is rewritten after every fold. Marking the
@@ -12,8 +12,10 @@
 // must not count, so only a trailing tag is a real ref.
 const TRAILING_REF_TAG = /<acp\b[^>]*>m(\d{5,})<\/acp>\s*$/;
 
-export function foldAnchorEnabled(): boolean {
-  return process.env.ACP_FOLD_ANCHOR === "1";
+/** The anchor applies only when enabled in config AND the live model is a
+ *  Claude model on a `*responses` API (the wire format handled here). */
+export function claudeFoldAnchorApplies(enabled: boolean | undefined, model: { api?: string; id?: string } | undefined): boolean {
+  return enabled !== false && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "");
 }
 
 function refNumber(ref: string): number | undefined {

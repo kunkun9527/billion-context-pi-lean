@@ -12225,7 +12225,8 @@ function mergeCompress(global, provider, model) {
     },
     promptPack: model?.promptPack ?? provider?.promptPack ?? global?.promptPack,
     stripImages: model?.stripImages ?? provider?.stripImages ?? global?.stripImages,
-    stripImagesKeepRecent: model?.stripImagesKeepRecent ?? provider?.stripImagesKeepRecent ?? global?.stripImagesKeepRecent
+    stripImagesKeepRecent: model?.stripImagesKeepRecent ?? provider?.stripImagesKeepRecent ?? global?.stripImagesKeepRecent,
+    claudeFoldAnchor: model?.claudeFoldAnchor ?? provider?.claudeFoldAnchor ?? global?.claudeFoldAnchor
   };
 }
 function resolveCompress(compress, provider, modelId) {
@@ -21512,8 +21513,8 @@ function applyStripImages(body, api, settings2) {
 
 // src/fold-anchor.ts
 var TRAILING_REF_TAG2 = /<acp\b[^>]*>m(\d{5,})<\/acp>\s*$/;
-function foldAnchorEnabled() {
-  return process.env.ACP_FOLD_ANCHOR === "1";
+function claudeFoldAnchorApplies(enabled, model) {
+  return enabled !== false && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "");
 }
 function refNumber(ref) {
   const m2 = /^m(\d+)$/.exec(ref);
@@ -22000,6 +22001,20 @@ var PANEL_ITEMS = [
   modelKeyItem("nudgeGrowthTokens", "Nudge interval", "Below Context threshold, the compress nudge waits until about this many tokens of old, compressible content have piled up (default 50K). Bigger: fewer nudges, more folded at once. Current model only.", ["30K", "50K", "70K", "100K", "150K", "200K"], k, parseK),
   modelKeyItem("minPressureBenefitTokens", "Minimum benefit", "No compress nudge, and no idle compact turn, when less than this could be reclaimed (default: larger of 5K and 1% of the window). Current model only.", ["5K", "10K", "20K", "30K", "50K"], k, parseK),
   {
+    id: "claudeFoldAnchor",
+    label: "Claude fold anchor",
+    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
+    values: () => [ON, OFF],
+    read: (a) => a.compress?.claudeFoldAnchor === false ? OFF : ON,
+    write(raw, value) {
+      if (value === OFF) obj(raw, "compress").claudeFoldAnchor = false;
+      else {
+        delete obj(raw, "compress").claudeFoldAnchor;
+        prune2(raw, ["compress"]);
+      }
+    }
+  },
+  {
     id: "debug",
     label: "Debug log",
     description: "Write detailed events to ~/.pi/acp.log for troubleshooting. Errors and main events are always logged.",
@@ -22157,6 +22172,10 @@ function inheritedNote(id, effective) {
 // src/index.ts
 var foldAnchorStart = /* @__PURE__ */ new Map();
 var foldAnchorLogged = /* @__PURE__ */ new Map();
+function claudeFoldAnchorOn(runtime, ctx) {
+  const m2 = ctx.model;
+  return claudeFoldAnchorApplies(resolveCompress(runtime.adapter.compress, m2?.provider, m2?.id).claudeFoldAnchor, m2);
+}
 function createAcpExtension(adapter = {}) {
   return (pi) => {
     if (process.env.BILLION_CONTEXT_PROXY) {
@@ -22281,7 +22300,7 @@ function wireBeforeProviderRequest(pi, runtime, standDownIfProxied) {
         body = outcome.body;
       }
     }
-    if (foldAnchorEnabled() && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "")) {
+    if (claudeFoldAnchorOn(runtime, ctx)) {
       const startRef = foldAnchorStart.get(sid);
       const anchor = applyFoldAnchor(body ?? event.payload, startRef);
       const outcome = { sid, startRef: startRef ?? null, index: anchor.index ?? null, reason: anchor.reason ?? "marked" };
@@ -22367,7 +22386,7 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         activeBefore: state.blocks.filter((b2) => b2.active).length
       });
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
-      if (foldAnchorEnabled()) {
+      if (claudeFoldAnchorOn(runtime, ctx)) {
         const ranges = viableRanges(turn.nudge?.compressibleRanges ?? []);
         foldAnchorStart.set(sid, earliestRef(ranges.map((r) => r.startRef)));
       }

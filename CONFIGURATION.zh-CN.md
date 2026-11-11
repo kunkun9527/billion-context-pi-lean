@@ -156,6 +156,7 @@
 | `compress.reasoning` | object | `{ "drop": true, "threshold": 2048 }` | 🟢 ACTIVE | 请求时丢弃历史 `compress` 调用上的超大思考（不修改持久化历史）。 |
 | `compress.stripImages` | boolean | `false` | 🟢 ACTIVE | **可选开启**：wire 层剥离历史图像载荷。为 `true` 时，除最近 `stripImagesKeepRecent` 条消息外，历史消息的图像部分在上游请求体中被剥离；纯图像消息折叠为 `"[image]"` 文本占位符。支持协议：anthropic-messages、openai-completions、openai-responses（含 azure/codex 变体）。 |
 | `compress.stripImagesKeepRecent` | number | `5` | 🟢 ACTIVE | `stripImages` 开启时保留图像载荷的最近消息条数。 |
+| `compress.claudeFoldAnchor` | boolean | `true` | 🟢 ACTIVE | **默认开启，仅对 Claude 生效**。未设为 `false` 时，若当前模型是走 `*responses` API 的 Claude 模型（模型 id 含 `claude`），会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control: {type: "ephemeral"}`，让下次折叠后仍不变的前缀继续命中 prompt cache。其他模型和 API 忽略此项。和其他 `compress` 字段一样，可以按 provider 或 model 单独设置；`/acp-config` 面板里的 Claude fold anchor 设置的是全局值。 |
 
 **prompts 键**
 

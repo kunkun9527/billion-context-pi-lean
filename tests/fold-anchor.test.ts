@@ -1,9 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyFoldAnchor, earliestRef } from "../src/fold-anchor.js";
+import { applyFoldAnchor, claudeFoldAnchorApplies, earliestRef } from "../src/fold-anchor.js";
+import { resolveCompress } from "../src/config.js";
 
-// Experimental Claude cache anchor (ACP_FOLD_ANCHOR=1): the anchor must sit
+// Claude cache anchor (compress.claudeFoldAnchor): the anchor must sit
 // before the earliest compressible range, never inside it.
+
+test("claudeFoldAnchor applies by default, only on Claude over a responses API", () => {
+  const claude = { api: "cliproxyapi-codex-responses", id: "claude-opus-5-5" };
+  assert.equal(claudeFoldAnchorApplies(true, claude), true);
+  assert.equal(claudeFoldAnchorApplies(undefined, claude), true, "on by default");
+  assert.equal(claudeFoldAnchorApplies(undefined, { api: "cliproxyapi-codex-responses", id: "gpt-6-luna" }), false, "default never reaches other models");
+  assert.equal(claudeFoldAnchorApplies(false, claude), false);
+  assert.equal(claudeFoldAnchorApplies(true, { api: "cliproxyapi-codex-responses", id: "gpt-6-luna" }), false, "non-Claude model");
+  assert.equal(claudeFoldAnchorApplies(true, { api: "anthropic-messages", id: "claude-opus-5-5" }), false, "non-responses API");
+});
+
+test("claudeFoldAnchor resolves global → provider → model, deepest defined value wins", () => {
+  const compress = { claudeFoldAnchor: true, providers: { p: { models: { off: { claudeFoldAnchor: false } } } } };
+  assert.equal(resolveCompress(compress, "p", "claude-opus-5-5").claudeFoldAnchor, true);
+  assert.equal(resolveCompress(compress, "p", "off").claudeFoldAnchor, false);
+  assert.equal(resolveCompress(undefined, "p", "claude-opus-5-5").claudeFoldAnchor, undefined);
+});
 
 const tag = (r: string) => `\n\n<acp tokens="3" type="text">${r}</acp>\n`;
 const user = (text: string) => ({ role: "user", content: [{ type: "input_text", text }] });

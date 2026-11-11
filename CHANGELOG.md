@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- fix(lean): the compress tool declaration no longer depends on whether a dedicated summary model is configured. Pi snapshots tool declarations before acp.json loads; the changed description made Pi re-declare compress at the end of the tool list, invalidating the cached prefix from the tools onward. The dedicated-model fallback rule stays in the per-turn system prompt.
+- feat: `compress.claudeFoldAnchor` (on by default; set `false` or use Claude fold anchor in the `/acp-config` panel to turn it off). Other models and APIs are never touched. For Claude models on a `*responses` API, marks the last text part before the earliest compressible range with `cache_control`, so the prefix that survives the next fold stays a prompt-cache hit. In a short Haiku 5.5 test the first request after the third fold read 15.2K cached tokens instead of 10.9K; long-session benefit is not yet measured.
+
 ## v0.3.1 (2026-11-09)
 
 - fix: a `compress.maxContextLimit` below 45% (e.g. the documented `"35%"` recipe) no longer triggers the acp-kernel warning `nudge.minContextLimitPct must not exceed nudge.maxContextLimitPct`. The kernel's cold-start gate (`minContextLimitPct`, 45%, not user-configurable) is lowered to `maxContextLimit` when it is set below it. Above `maxContextLimit` the pressure branch already decides, so no nudge decision changes. Nothing changes when `maxContextLimit` is unset or at least 45%. Docs: the cold-start gate does not affect T2/T3 escalation.

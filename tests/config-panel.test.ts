@@ -29,6 +29,20 @@ test("applyPanelValue: idle settings, per-model compress keys, inherit prunes", 
   assert.equal("compressionModelId" in raw, false);
 });
 
+test("Claude fold anchor is on by default; off writes compress.claudeFoldAnchor: false, on prunes it", () => {
+  assert.equal(readPanelValue({}, "claudeFoldAnchor", scope), "on", "on by default");
+  const raw: Record<string, any> = { compress: { promptPack: "lean" } };
+  applyPanelValue(raw, "claudeFoldAnchor", "off", scope);
+  assert.deepEqual(raw.compress, { promptPack: "lean", claudeFoldAnchor: false });
+  assert.equal(readPanelValue({ compress: raw.compress }, "claudeFoldAnchor", scope), "off");
+  applyPanelValue(raw, "claudeFoldAnchor", "on", scope);
+  assert.deepEqual(raw.compress, { promptPack: "lean" });
+  const bare: Record<string, any> = { compress: { claudeFoldAnchor: false } };
+  applyPanelValue(bare, "claudeFoldAnchor", "on", scope);
+  assert.deepEqual(bare, {}, "empty compress object pruned");
+  assert.equal(readPanelValue({ compress: { claudeFoldAnchor: true } }, "claudeFoldAnchor", scope), "on");
+});
+
 test("inherit keeps sibling keys of other models and providers", () => {
   const raw: Record<string, any> = { compress: { promptPack: "lean", providers: { cliproxyapi: { models: { "claude-opus-5-5": { nudgeGrowthTokens: 100_000, minPressureBenefitTokens: 30_000 } } } } } };
   applyPanelValue(raw, "nudgeGrowthTokens", "inherit", scope);
