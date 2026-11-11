@@ -6373,7 +6373,7 @@ function inheritedContentIds(state, block) {
   }
   return ids;
 }
-function snapToNeighborVisible(state, indexByMessageId, refNumber, endpoint) {
+function snapToNeighborVisible(state, indexByMessageId, refNumber2, endpoint) {
   let bestIndex = null;
   let bestRef = null;
   for (const [rawId, index] of indexByMessageId) {
@@ -6382,11 +6382,11 @@ function snapToNeighborVisible(state, indexByMessageId, refNumber, endpoint) {
     const ref = refToIndex(refText);
     if (ref === null) continue;
     if (endpoint === "start") {
-      if (ref > refNumber && (bestRef === null || ref < bestRef)) {
+      if (ref > refNumber2 && (bestRef === null || ref < bestRef)) {
         bestRef = ref;
         bestIndex = index;
       }
-    } else if (ref < refNumber && (bestRef === null || ref > bestRef)) {
+    } else if (ref < refNumber2 && (bestRef === null || ref > bestRef)) {
       bestRef = ref;
       bestIndex = index;
     }
@@ -21510,6 +21510,87 @@ function applyStripImages(body, api, settings2) {
   return { body: result.body, removed: result.removed };
 }
 
+// src/fold-anchor.ts
+var TRAILING_REF_TAG2 = /<acp\b[^>]*>m(\d{5,})<\/acp>\s*$/;
+function foldAnchorEnabled() {
+  return process.env.ACP_FOLD_ANCHOR === "1";
+}
+function refNumber(ref) {
+  const m2 = /^m(\d+)$/.exec(ref);
+  return m2 ? Number(m2[1]) : void 0;
+}
+function itemTexts(item) {
+  if (!item || typeof item !== "object") return [];
+  const { content, output } = item;
+  const out = [];
+  if (typeof output === "string") out.push(output);
+  for (const list of [content, output]) {
+    if (!Array.isArray(list)) continue;
+    for (const part of list) {
+      const text = part?.text;
+      if (typeof text === "string") out.push(text);
+    }
+  }
+  if (typeof content === "string") out.push(content);
+  return out;
+}
+function itemRefs(item) {
+  const refs = [];
+  for (const text of itemTexts(item)) {
+    const m2 = TRAILING_REF_TAG2.exec(text);
+    if (m2) refs.push(Number(m2[1]));
+  }
+  return refs;
+}
+function earliestRef(refs) {
+  let best;
+  let bestNum = Infinity;
+  for (const ref of refs) {
+    const n = refNumber(ref);
+    if (n !== void 0 && n < bestNum) {
+      best = ref;
+      bestNum = n;
+    }
+  }
+  return best;
+}
+function lastTextPart(item) {
+  if (!item || typeof item !== "object") return void 0;
+  const content = item.content;
+  if (!Array.isArray(content)) return void 0;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const part = content[i];
+    if ((part?.type === "input_text" || part?.type === "output_text") && typeof part.text === "string" && part.text.trim()) {
+      return part;
+    }
+  }
+  return void 0;
+}
+function applyFoldAnchor(body, startRef) {
+  const start = startRef ? refNumber(startRef) : void 0;
+  if (start === void 0) return { reason: "no-range" };
+  const input = body?.input;
+  if (!Array.isArray(input)) return { reason: "no-input" };
+  let boundary = -1;
+  for (let i = 0; i < input.length; i++) {
+    const refs = itemRefs(input[i]);
+    if (refs.some((r) => r >= start)) break;
+    if (refs.length > 0) boundary = i;
+  }
+  if (boundary < 0) return { reason: "no-boundary" };
+  for (let i = boundary; i >= 0; i--) {
+    const part = lastTextPart(input[i]);
+    if (!part) continue;
+    if (part.cache_control) return { reason: "already-marked", index: i };
+    const item = input[i];
+    const content = item.content.map((p) => p === part ? { ...part, cache_control: { type: "ephemeral" } } : p);
+    const nextInput = [...input];
+    nextInput[i] = { ...item, content };
+    return { body: { ...body, input: nextInput }, index: i };
+  }
+  return { reason: "no-text-part" };
+}
+
 // src/tool-guardrails.ts
 import { createHash as createHash5 } from "crypto";
 import {
@@ -22074,6 +22155,8 @@ function inheritedNote(id, effective) {
 }
 
 // src/index.ts
+var foldAnchorStart = /* @__PURE__ */ new Map();
+var foldAnchorLogged = /* @__PURE__ */ new Map();
 function createAcpExtension(adapter = {}) {
   return (pi) => {
     if (process.env.BILLION_CONTEXT_PROXY) {
@@ -22187,19 +22270,29 @@ function wireBeforeProviderRequest(pi, runtime, standDownIfProxied) {
   pi.on("before_provider_request", async (event, ctx) => {
     if (runtime.refused) return;
     if (standDownIfProxied(ctx)) return;
+    const sid = ctx.sessionManager.getSessionId();
+    const model = ctx.model;
+    let body;
     const settings2 = runtime.stripImagesFor(ctx);
-    if (!settings2.enabled) return;
-    const outcome = applyStripImages(event.payload, ctx.model?.api, settings2);
-    if (outcome.removed > 0) {
-      logInfo("strip-images", {
-        sid: ctx.sessionManager.getSessionId(),
-        event: "stripped",
-        removed: outcome.removed,
-        keepRecent: settings2.keepRecent
-      });
-      return outcome.body;
+    if (settings2.enabled) {
+      const outcome = applyStripImages(event.payload, model?.api, settings2);
+      if (outcome.removed > 0) {
+        logInfo("strip-images", { sid, event: "stripped", removed: outcome.removed, keepRecent: settings2.keepRecent });
+        body = outcome.body;
+      }
     }
-    return;
+    if (foldAnchorEnabled() && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "")) {
+      const startRef = foldAnchorStart.get(sid);
+      const anchor = applyFoldAnchor(body ?? event.payload, startRef);
+      const outcome = { sid, startRef: startRef ?? null, index: anchor.index ?? null, reason: anchor.reason ?? "marked" };
+      const key = JSON.stringify(outcome);
+      if (foldAnchorLogged.get(sid) !== key) {
+        foldAnchorLogged.set(sid, key);
+        logInfo("fold-anchor", outcome);
+      }
+      if (anchor.body) body = anchor.body;
+    }
+    return body;
   });
 }
 function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
@@ -22274,6 +22367,10 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         activeBefore: state.blocks.filter((b2) => b2.active).length
       });
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
+      if (foldAnchorEnabled()) {
+        const ranges = viableRanges(turn.nudge?.compressibleRanges ?? []);
+        foldAnchorStart.set(sid, earliestRef(ranges.map((r) => r.startRef)));
+      }
       idle?.noteNudge(sid, turn.nudge);
       const userGuard = protectLatestUserMessage(coreMessages, turn.messages, config, tokenCount);
       if (userGuard.restoredId) {

@@ -1,42 +1,36 @@
 # 当前状态
 
-本次任务：修复重折叠日志恢复，并完成共享计量、会话生命周期清理、出站改写顺序三项整理。实现与维护说明见 [MAINTENANCE.md](MAINTENANCE.md)；用户可见变更见 [CHANGELOG.md](CHANGELOG.md) 的 v0.3.0。用户已授权发布 npm 与 GitHub Release，明确确认版本为 0.3.0（不是 3.0.0）；发布范围包括此前未发布的论文启发提交 `0b4d80a` 及分析脚本归档 `4b9bc2c`。
+本次任务的目标是：多次压缩之后，提高 Claude 的 prompt-cache 命中率。基准提交是 v0.3.1 的 `535c090`。
 
-- 基准提交：`4b9bc2c24a857c18832cbfbe5d198a1a850f1512`。
-- 交付版本为 0.3.0，包与锁文件同步，源码与重建的 `dist/` 同一发布提交。发布状态以 [GitHub v0.3.0](https://github.com/kunkun9527/billion-context-pi-lean/releases/tag/v0.3.0) 与 `npm view billion-context-pi-lean@0.3.0 version dist.integrity` 的查询结果为准。
-- 保留 Lean 外壳及工具面；未改提示词预算，未生成 HTML。
+- **compress 声明固定**（已提交）：`lean/index.ts` 中定义了常量 `COMPRESS_DESCRIPTION`。旧实现的描述会随 acp.json 是否配置了专用模型而变。Pi 在加载配置之前就记下了工具声明，之后只要重新读取一次工具列表，就会把 compress 当成新工具重新声明，并排到列表末尾，工具定义之后的整段缓存前缀因此全部失效。最近的 586 个会话里有 42 个出现过这种情况。专用模型的兜底规则现在只写在每轮的系统提示里（`DEDICATED_PROMPT_LINE`）。经用户同意，`lean/tests/facade.test.mjs` 中原先要求“描述必须包含兜底规则”的断言，改成了断言两种模式下声明保持一致。
+- **Fold anchor**（已提交，实验性，默认关闭）：实现在 `src/fold-anchor.ts`，接入点在 `src/index.ts`。只有同时满足以下条件才生效：设置了 `ACP_FOLD_ANCHOR=1`、走 `*responses` API、模型名包含 `claude`。生效时，会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control`，让压缩后仍保持不变的前缀有机会继续命中缓存。
+- `docs/REDESIGN.md`：一份更早的重写方案，没有纳入版本管理。用户的结论是暂不重写。
 
 ## 已验证
 
-- 恢复链路：先复现单独/混合重折叠的摘要恢复问题，再修复成功范围记录与 inline restore 时序回放；补充原生和 `acp_context` 日志两种形态。最终相关命令：
-  `node --import tsx --import ./tests/support/isolate-env.ts --test tests/compress-model.test.ts tests/state-rebuild.test.ts tests/decompress-tool.test.ts tests/compress-tool.test.ts`
-  结果：84 通过、0 失败；`npm run typecheck` 通过。
-- 共享计量：9 个相关测试文件共 144 项通过。覆盖学习窗口先于输出预留、thinking 固定开销，以及展示/预演不消费一次性 overflow 状态；probe 克隆状态并禁用 clip replay。
-- 生命周期及出站：8 个相关测试文件共 98 项通过；覆盖会话隔离、重复释放、进行中的锁，以及临时 nudge 不关闭未完成 compress 轮次。
+- `npm run check && git diff --check`：结果见本次提交前的后台日志。
+- 真实运行：在临时目录里用 Haiku 5.5 新建会话，执行一次工具调用，再用 `-c` 恢复会话，然后检查 session 中 `role: system` 的条目。旧代码出现了 `added ['compress'] removed ['compress']`，新代码只有一条初始声明。
+- Haiku 实验：开启 fold anchor 后，命中率从 74.6% 升到 77.5%。按 `input + 2×write + 0.1×read` 计算的费用指数下降约 9.7%。第 3 次压缩后，第一个请求的缓存读取量从 10.9K 升到 15.2K。两组运行生成的内容并不相同，所以这不是严格的因果结论。
 
-## 旧版行为审计与新增回归
+## 已决定不做
 
-- 对照基准源码运行 5 组固定时钟/相同配置的真实 context 输入：普通消息、未完成 compress、thinking-only 退化尾部、自定义消息、图片；出站消息精确一致，原日志未改写。其余高风险顺序见 `tests/outbound.test.ts`。
-- Spec 审查返回 1 个中等问题：跨块 refold 的成功范围遗漏。复现时确认：纯相邻块 refold 使用调用方摘要；混合批次的新范围超过 `minCompressRange` 后可成功更新旧块并新增块，但恢复记录原本只有新块（1 条而非 3 条）。现按实际变化的块记录，保留旧版 live 行为；原生/Lean 包装及单独/混合回放均通过。跳过的重叠范围也不再误记。
-- 本轮新增 14 项回归：上述相邻块/混合恢复、重复重叠范围、fresh/stale/context_edit/aborted/无 anchor 的用量信任、Anthropic 预留豁免、展示后首次发送消费 overflow、custom user/完整摘要恢复、启动保留 prefix/学习窗口与关闭不清空保存状态。
-- 定向命令：`npm run typecheck`；`node --import tsx --import ./tests/support/isolate-env.ts --test tests/tokens.test.ts tests/outbound.test.ts tests/runtime-lifecycle.test.ts tests/floor-stale.test.ts tests/compress-model.test.ts tests/state-rebuild.test.ts`。结果：类型检查通过、98 项测试通过、0 失败；`git diff --check` 通过。
-
-## 最终验证与审查
-
-- 0.3.0 发布前再次运行 `npm run check && git diff --check`：771 项源码测试、27 项 Lean 测试均通过，类型检查与构建通过（日志 `M:/Temp/pi-bg-lean/a23ba5a0/output.log`）。实际 npm tarball 的 55 个文件逐一与已验证工作区比对，包含 Lean 入口、bundle、声明及 schema；SHA-512 与打包元数据一致。
-- 本轮最终 `npm run check && git diff --check` 通过：771 项源码测试、27 项 Lean 测试，均 0 失败、0 跳过；源码/Lean 类型检查与 `dist/` 构建通过。日志 `M:/Temp/pi-bg-lean/472303fe/output.log`。自动 Spec 审查已完成，唯一发现经复现后已修复；没有新增对外工具或提示词。
+- **stale thinking 修复**：压缩会改写历史前缀，导致压缩调用消息上的 thinking 签名失效，服务端会按 `prefix_binding_mismatch` 把这段 thinking 丢掉（CLIProxyAPI 在 `claude_executor_request.go:413-454` 设置了 `drop_block`）。如果这一轮的最后一条回复没有 thinking，下一个请求的缓存就只能命中到锚点为止。回放确认，由客户端主动剥掉这段 thinking 后可以完整命中。但 30 天的 Opus 会话里只有 2 例真正掉了缓存，用户同意先不做。
+- **“折叠后模型否认自己调用过工具”**：这是支线问题，与缓存目标无关，用户要求回到缓存这条主线。结论记录如下，代码没有改动：
+  - 根因：折叠会把原位置的工具调用连同结果一起移走（pair expansion），摘要则内联进模型自己发起的 compress 参数里。用 Haiku 或 DeepSeek 追问“你读过文件吗”，会稳定地得到“没读过，摘要是我编的”。
+  - 曾尝试 D+A：把摘要移到 compress 结果里，并补一句说明。这个方案没有解决问题，已撤回。
+  - 请求层模拟（`M:/Temp/fold-view/archive.ts`）显示，只要在原位置保留真实的调用，并在输出里写明“当时已收到，后来被移除”，两个会话 30/30 都承认调用过 read。不过 Haiku 仍可能把时间顺序说错。Oracle 第四轮倾向于把摘要放在 compress 结果里、原位置只保留回执，但这一点还没有实验验证。正式实现估计要改 250–450 行。
+  - 没有在 Opus 上验证过（用户考虑成本，不跑）。也没有发现它在真实工作中造成损失的实例。
 
 ## 限制与未验证
 
-- 旧日志若从未记录专用模型写出的重折叠摘要，不能凭空补回缺失文本；本次保证新记录可以恢复。
-- 没有在用户真实会话里主动删除 sidecar 或调用付费模型；恢复回归采用隔离临时会话与假模型。
-- 文档核对：`AGENTS.md` 原写专用调用失败即用回退摘要，与代码及维护说明不符，已修正文档；`src/index.ts` 的 `DEDICATED_CALLER_RULES` 和 `src/compress-tool.ts` 的部分旧提示/注释仍称失败回退，本轮按“不改工具面与提示词预算”的范围保留。实际失败不折叠、配置不兼容时回退的契约有既有测试保护。
+- fold anchor 在真实长 Opus 会话里的收益还没有验证。增加第二个锚点可能会挤掉代理放在 system 上的断点，Oracle 建议暂时不加。
+- 已有会话里 compress 已经排到工具列表末尾，这个顺序会一直保留，新代码只能保证以后不再变化。
+- CLIProxyAPI `config.yaml:1610` 已恢复为 `request-log: false`。
 
 ## 建议技能
 
-- `code-review`：需要额外 Standards 审查时使用；本任务自动仅审 Spec。
-- `handoff`：继续任务后按本文件现有结构更新状态。
+- `code-review`：需要时按 `~/.agents/skills/code-review/auto-spec-review.md` 做 Spec 审查。
 
 ## 单一步骤
 
-用户更新到 0.3.0 后，在测试会话重载扩展并运行 `/acp` 做真实宿主冒烟；工具注册及计量面板无异常即通过。线上发布收据以 GitHub Release 和 npm 元数据为准。
+日常使用 Opus 时，启动 Pi 前设置 `ACP_FOLD_ANCHOR=1`，不需要额外花钱。几天后统计每次 fold 之后第一个请求的 `cacheRead`，看是否高于之前统计的中位数 10.5K。如果有提升且没有异常，再考虑默认开启。

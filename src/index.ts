@@ -27,6 +27,12 @@ import { liveOnlyTailCached } from "./live-only-tail.js";
 import { prepareHistoryForSend, finalizeOutboundMessages } from "./outbound.js";
 import { buildAcpSystemPrompt } from "./system-prompt.js";
 import { applyStripImages } from "./strip-images.js";
+import { applyFoldAnchor, earliestRef, foldAnchorEnabled } from "./fold-anchor.js";
+
+// Experimental (ACP_FOLD_ANCHOR=1): earliest viable compressible start ref per
+// session, recorded by the context transform for the next provider request.
+const foldAnchorStart = new Map<string, string | undefined>();
+const foldAnchorLogged = new Map<string, string>();
 import { wireToolGuardrails } from "./tool-guardrails.js";
 import { wireIdleCompact, type IdleCompactHandle } from "./idle-compact.js";
 import { makeConfigCommand } from "./config-panel.js";
@@ -219,19 +225,29 @@ function wireBeforeProviderRequest(pi: ExtensionAPI, runtime: AcpRuntime, standD
   pi.on("before_provider_request", async (event, ctx) => {
     if (runtime.refused) return;
     if (standDownIfProxied(ctx)) return;
+    const sid = ctx.sessionManager.getSessionId();
+    const model = ctx.model as { api?: string; id?: string } | undefined;
+    let body: unknown;
     const settings = runtime.stripImagesFor(ctx);
-    if (!settings.enabled) return;
-    const outcome = applyStripImages(event.payload, (ctx.model as { api?: string } | undefined)?.api, settings);
-    if (outcome.removed > 0) {
-      logInfo("strip-images", {
-        sid: ctx.sessionManager.getSessionId(),
-        event: "stripped",
-        removed: outcome.removed,
-        keepRecent: settings.keepRecent,
-      });
-      return outcome.body;
+    if (settings.enabled) {
+      const outcome = applyStripImages(event.payload, model?.api, settings);
+      if (outcome.removed > 0) {
+        logInfo("strip-images", { sid, event: "stripped", removed: outcome.removed, keepRecent: settings.keepRecent });
+        body = outcome.body;
+      }
     }
-    return;
+    if (foldAnchorEnabled() && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "")) {
+      const startRef = foldAnchorStart.get(sid);
+      const anchor = applyFoldAnchor(body ?? event.payload, startRef);
+      const outcome = { sid, startRef: startRef ?? null, index: anchor.index ?? null, reason: anchor.reason ?? "marked" };
+      const key = JSON.stringify(outcome);
+      if (foldAnchorLogged.get(sid) !== key) {
+        foldAnchorLogged.set(sid, key);
+        logInfo("fold-anchor", outcome);
+      }
+      if (anchor.body) body = anchor.body;
+    }
+    return body;
   });
 }
 
@@ -374,6 +390,10 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       });
 
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
+      if (foldAnchorEnabled()) {
+        const ranges = viableRanges(turn.nudge?.compressibleRanges ?? []);
+        foldAnchorStart.set(sid, earliestRef(ranges.map((r) => r.startRef)));
+      }
       idle?.noteNudge(sid, turn.nudge);
       // Lean: emergency truncation must not cut the latest user message,
       // which compression already treats as protected.
