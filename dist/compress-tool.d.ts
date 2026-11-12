@@ -3,7 +3,7 @@ import { type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-codin
 import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import type { AcpRuntime } from "./runtime.js";
 import { type ToolPromptOverrides } from "./surface.js";
-import { type CompressionBlock, type CompressionState } from "acp-kernel";
+import { type CompressionBlock, type CompressionState, type NudgeDecision } from "acp-kernel";
 declare const RangeSpec: Type.TObject<{
     startId: Type.TString;
     endId: Type.TString;
@@ -58,6 +58,14 @@ export declare function isCompressNoopText(text: string): boolean;
 export declare function blockSpanLabel(block: CompressionBlock, state: CompressionState): string;
 export declare function summaryFingerprintLine(blockId: string, summary: string): string;
 export declare function tierReadyHint(state: CompressionState, config: ReturnType<AcpRuntime["configFor"]>): string;
+/** Header for the post-fold range list. Below the model's minimum benefit
+ *  (the same bar that silences nudges and idle compact) it says to stop. */
+export declare function remainingRangesHeader(nudge: NudgeDecision | undefined, config: {
+    modelContextLimit: number;
+    nudge: {
+        minPressureBenefitTokens?: number;
+    };
+}): string;
 type AgentMessage = SessionMessageEntry["message"];
 /**
  * Lean: put each active block's full current summary back into the outbound

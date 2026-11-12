@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-5BFUH7SE.js";
+} from "./chunk-UMW2JJDB.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -18659,10 +18659,18 @@ async function handleCompress(args, runtime, ctx, toolCallId, signal, tools = []
   if (blocksCreated > 0) {
     const afterSnapshot = compressibleSnapshotText(afterTurn.nudge);
     if (!afterSnapshot.startsWith("No compressible")) {
-      lines.push("Current compressible ranges (use these refs exactly as listed):\n" + afterSnapshot);
+      lines.push(remainingRangesHeader(afterTurn.nudge, config) + "\n" + afterSnapshot);
     }
   }
   return lines.join("\n");
+}
+function remainingRangesHeader(nudge, config) {
+  const remaining = viableRanges(nudge?.compressibleRanges ?? []).reduce((sum, r) => sum + r.tokens, 0);
+  const minBenefit = config.nudge.minPressureBenefitTokens ?? Math.max(5e3, Math.round(config.modelContextLimit * 0.01));
+  if (remaining < minBenefit) {
+    return `Remaining compressible content is small (~${formatK2(remaining)} tokens, below the ${formatK2(minBenefit)} minimum benefit): another compress call would re-send the history after its range uncached and cost more prompt cache than it saves. Stop compressing unless the user explicitly asks to fold these too; a general request to compress as much as possible is already met. Ranges, for reference only:`;
+  }
+  return "Remaining compressible ranges (optional; each further compress call re-sends the history after its earliest range uncached, so fold them only if worth it, all in one call; use these refs exactly as listed):";
 }
 async function writeDedicatedSummaries(input) {
   const ref = input.runtime.getCompressionModelRef();
@@ -20176,7 +20184,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.4.0";
+    return "0.4.1";
   } catch {
     return "dev";
   }
@@ -21042,7 +21050,7 @@ async function statusReport(runtime, ctx) {
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m2) => m2.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
   const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
-  const versionStr = "0.4.0" ? `billion-context-pi@${"0.4.0"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const versionStr = "0.4.1" ? `billion-context-pi@${"0.4.1"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -22172,6 +22180,10 @@ function inheritedNote(id, effective) {
 // src/index.ts
 var foldAnchorStart = /* @__PURE__ */ new Map();
 var foldAnchorLogged = /* @__PURE__ */ new Map();
+function forgetFoldAnchor(sid) {
+  foldAnchorStart.delete(sid);
+  foldAnchorLogged.delete(sid);
+}
 function claudeFoldAnchorOn(runtime, ctx) {
   const m2 = ctx.model;
   return claudeFoldAnchorApplies(resolveCompress(runtime.adapter.compress, m2?.provider, m2?.id).claudeFoldAnchor, m2);
@@ -22262,8 +22274,9 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     if (standDownIfProxied(ctx)) return;
     runtime.startSession(ctx.sessionManager.getSessionId());
     const sid = ctx.sessionManager.getSessionId();
+    forgetFoldAnchor(sid);
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.0" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.1" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {
@@ -22279,8 +22292,12 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
       pi.registerTool(makeRuleTool(runtime));
     }
   });
+  pi.on("session_tree", (_event, ctx) => {
+    forgetFoldAnchor(ctx.sessionManager.getSessionId());
+  });
   pi.on("session_shutdown", (_event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
+    forgetFoldAnchor(sid);
     runtime.releaseSession(sid);
     closeLogStream();
   });
@@ -22388,7 +22405,8 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
       if (claudeFoldAnchorOn(runtime, ctx)) {
         const ranges = viableRanges(turn.nudge?.compressibleRanges ?? []);
-        foldAnchorStart.set(sid, earliestRef(ranges.map((r) => r.startRef)));
+        const start = earliestRef(ranges.map((r) => r.startRef));
+        if (start) foldAnchorStart.set(sid, start);
       }
       idle?.noteNudge(sid, turn.nudge);
       const userGuard = protectLatestUserMessage(coreMessages, turn.messages, config, tokenCount);

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.1 (2026-11-12)
+
+- fix: the Claude fold anchor no longer drops after the last fold. With no compressible range left it keeps the previous start, whose prefix is unchanged and already cached. In a real Opus session the request after such a fold read 10.5K cached tokens instead of the 70.1K the two folds before it kept. The remembered start is reset on session start, `/tree` and shutdown.
+- fix(lean): avoid back-to-back small folds. Each fold re-sends the history after its range uncached; the same session folded three times in a row, the last reclaiming 473 tokens. The resident prompt now says to fold all ranges in one compress call. After a fold the remaining ranges are marked optional, and below the model's minimum benefit (`minPressureBenefitTokens`, the bar nudges and idle compact already use) the result says to stop unless the user explicitly asks to fold those too.
+
 ## v0.4.0 (2026-11-11)
 
 - fix(lean): the compress tool declaration no longer depends on whether a dedicated summary model is configured. Pi snapshots tool declarations before acp.json loads; the changed description made Pi re-declare compress at the end of the tool list, invalidating the cached prefix from the tools onward. The dedicated-model fallback rule stays in the per-turn system prompt.

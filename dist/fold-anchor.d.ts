@@ -13,7 +13,9 @@ export interface FoldAnchorOutcome {
     reason?: string;
 }
 /** Mark the last text part that precedes `startRef` (the earliest compressible
- *  message). Conservative: the anchor sits at or before the last tagged item
+ *  message, or the previous one when none remains; it may already be folded
+ *  away — the scan compares ref numbers, so it need not appear in the body).
+ *  Conservative: the anchor sits at or before the last tagged item
  *  whose ref is below `startRef`, so untagged assistant items belonging to the
  *  range can never be anchored. Pure: returns a shallow-copied body. */
 export declare function applyFoldAnchor(body: unknown, startRef: string | undefined): FoldAnchorOutcome;

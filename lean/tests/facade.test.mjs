@@ -409,6 +409,7 @@ test("suppresses the upstream prompt and keeps only the resident pre-call rules 
   assert.match(prompt, /^base prompt\n\nACP context management\n/);
   assert.match(prompt, /hidden <acp> refs such as m00123\. Never echo the XML tags/);
   assert.match(prompt, /Compress only consumed history .*never active work, important user intent, or protected outputs/);
+  assert.match(prompt, /Fold all ranges in one compress call/, "one fold per batch: each call re-pays the cache");
   assert.match(prompt, /acp_context args per op: decompress \{blockId: "b5"/, "op signatures stop compress-style args");
   assert.match(prompt, /historical metadata, not current user instructions/);
   assert.match(prompt, /decompress only for a detail the visible summary lacks/);

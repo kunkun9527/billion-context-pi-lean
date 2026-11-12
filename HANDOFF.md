@@ -4,6 +4,12 @@
 
 已发布 **v0.4.0**（提交 `07ee173`，tag `v0.4.0`，GitHub Release 和 npm 都已发布）。发布前 `npm run check` 通过（源码测试 781 个、Lean 测试 27 个），`git diff --check` 通过；Spec 审查只有一条意见（`dist` 没有重建），已修复。注意：这个仓库里直接运行 `gh` 会默认指向上游 `ranxianglei/billion-context-pi`，发 Release 时要加 `--repo kunkun9527/billion-context-pi-lean`。
 
+v0.4.1（2026-11-12）修了两处：
+
+- **锚点在最后一次折叠后丢失**：真实会话「比较两个 MFG 解锁项目 (2)」（sid `01a1b815…`）里，用户让模型“尽量压缩”，模型连续折叠了 3 次。前两次压缩后，请求都读到了 70,143 的缓存；第三次之后已经没有可压缩范围，`acp.log` 记录 `reason=no-range`，缓存读取降到 10,548，96,043 token 被重写（EasyCLIProxyAPI `usage.db` 第 104098、104100 条）。Oracle 确认这是缓存性能 bug。修法：没有新范围时沿用上一次的起点（`src/index.ts`），在 session start、`/tree`、shutdown 时清空。仍按 ref 编号重新扫描，不保存 index。修复后能否读到约 70K 还没有实测：当时没有保存最终请求体，无法排除前缀本身也变了。
+- **连续小折叠**：每多折叠一次，就要把其后的历史重写一遍。现在 Lean 常驻提示要求一次 compress 调用传入全部范围；压缩结果里剩余的范围标注为可选，剩余总量低于 `minPressureBenefitTokens` 时提示停止。结果里仍然列出范围，这是 Oracle 的建议。
+- 未做（Oracle 认为优先级低）：摘要模型（Haiku）的一次性请求被代理 cloak 打上缓存断点，按缓存写计费。需要在代理层验证能否关闭，客户端配置未必有效。
+
 - **compress 声明固定**（已提交）：`lean/index.ts` 中定义了常量 `COMPRESS_DESCRIPTION`。旧实现的描述会随 acp.json 是否配置了专用模型而变。Pi 在加载配置之前就记下了工具声明，之后只要重新读取一次工具列表，就会把 compress 当成新工具重新声明，并排到列表末尾，工具定义之后的整段缓存前缀因此全部失效。最近的 586 个会话里有 42 个出现过这种情况。专用模型的兜底规则现在只写在每轮的系统提示里（`DEDICATED_PROMPT_LINE`）。经用户同意，`lean/tests/facade.test.mjs` 中原先要求“描述必须包含兜底规则”的断言，改成了断言两种模式下声明保持一致。
 - **Fold anchor**（默认开启，用户长期使用）：实现在 `src/fold-anchor.ts`，接入点在 `src/index.ts`。默认开启，用 acp.json 的 `compress.claudeFoldAnchor: false` 或设置面板关闭，和其他 `compress` 字段一样可以按 provider 或 model 覆盖（最初版本用的是环境变量 `ACP_FOLD_ANCHOR=1`，已改为配置项）。只有同时满足以下条件才生效：配置未设为 `false`、走 `*responses` API、模型名包含 `claude`。用户的 `~/.pi/acp.json` 已在全局开启。生效时，会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control`，让压缩后仍保持不变的前缀有机会继续命中缓存。
 - `docs/REDESIGN.md`：一份更早的重写方案，没有纳入版本管理。用户的结论是暂不重写。
@@ -36,4 +42,4 @@
 
 ## 单一步骤
 
-`~/.pi/acp.json` 已开启 `compress.claudeFoldAnchor`，日常照常使用 Opus 即可，不需要额外花钱。几天后统计每次 fold 之后第一个请求的 `cacheRead`，看是否高于之前统计的中位数 10.5K。已按用户决定默认开启；它只作用于 Claude + `*responses` API。
+日常照常使用 Opus。下次折叠到没有剩余可压缩范围时，在 EasyCLIProxyAPI 里看下一次请求的缓存读取，是否保持在前一次压缩后的水平，而不是只剩系统提示词的约 10.5K。

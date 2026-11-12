@@ -31,8 +31,17 @@ import { applyFoldAnchor, claudeFoldAnchorApplies, earliestRef } from "./fold-an
 
 // compress.claudeFoldAnchor: earliest viable compressible start ref
 // per session, recorded by the context transform for the next provider request.
-const foldAnchorStart = new Map<string, string | undefined>();
+// Sticky: a turn with no viable range keeps the previous start, because the
+// prefix before it is unchanged and was cached by the previous request.
+const foldAnchorStart = new Map<string, string>();
 const foldAnchorLogged = new Map<string, string>();
+
+/** Drop the anchor start when the history it was measured against may change
+ *  (session start/resume, /tree branch switch, shutdown). */
+function forgetFoldAnchor(sid: string): void {
+  foldAnchorStart.delete(sid);
+  foldAnchorLogged.delete(sid);
+}
 
 function claudeFoldAnchorOn(runtime: AcpRuntime, ctx: ExtensionContext): boolean {
   const m = ctx.model as { provider?: string; id?: string; api?: string } | undefined;
@@ -190,6 +199,7 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
     if (standDownIfProxied(ctx)) return;
     runtime.startSession(ctx.sessionManager.getSessionId());
     const sid = ctx.sessionManager.getSessionId();
+    forgetFoldAnchor(sid);
     // Model identity on every session start: diagnosing "which model loops
     // on compress rejections" from user logs required cwd forensics — the log
     // never said which model it was. id + contextWindow also catch window
@@ -213,8 +223,12 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       pi.registerTool(makeRuleTool(runtime));
     }
   });
+  pi.on("session_tree", (_event, ctx) => {
+    forgetFoldAnchor(ctx.sessionManager.getSessionId());
+  });
   pi.on("session_shutdown", (_event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
+    forgetFoldAnchor(sid);
     runtime.releaseSession(sid);
     closeLogStream();
   });
@@ -397,7 +411,8 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
       if (claudeFoldAnchorOn(runtime, ctx)) {
         const ranges = viableRanges(turn.nudge?.compressibleRanges ?? []);
-        foldAnchorStart.set(sid, earliestRef(ranges.map((r) => r.startRef)));
+        const start = earliestRef(ranges.map((r) => r.startRef));
+        if (start) foldAnchorStart.set(sid, start);
       }
       idle?.noteNudge(sid, turn.nudge);
       // Lean: emergency truncation must not cut the latest user message,

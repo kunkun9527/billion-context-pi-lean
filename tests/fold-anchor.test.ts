@@ -2,6 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyFoldAnchor, claudeFoldAnchorApplies, earliestRef } from "../src/fold-anchor.js";
 import { resolveCompress } from "../src/config.js";
+import { createAcpExtension } from "../src/index.js";
+import { rm } from "node:fs/promises";
+import { tmpPath } from "./tmp-path.js";
 
 // Claude cache anchor (compress.claudeFoldAnchor): the anchor must sit
 // before the earliest compressible range, never inside it.
@@ -78,7 +81,98 @@ test("leaves an already-marked anchor unchanged", () => {
   assert.equal(out.body, undefined);
 });
 
+test("a start ref already folded out of the payload still anchors before where it was", () => {
+  const src = body();
+  src.input.splice(3, 2); // m00003's call/result folded away; start m00003 no longer appears
+  const out = applyFoldAnchor(src, "m00003");
+  assert.equal(out.index, 1, "anchored at the last tagged item below the folded start");
+  assert.ok(marked(out.body, 1));
+});
+
 test("earliestRef orders numerically across digit widths", () => {
   assert.equal(earliestRef(["m100000", "m99999", "m100001"]), "m99999");
   assert.equal(earliestRef([]), undefined);
+});
+
+// ─── Sticky start through the extension hooks ──────────────────────────────
+// After the last fold no viable range remains, but the prefix before the
+// previous start is unchanged and was cached by the previous request — the
+// anchor must stay there instead of dropping (cacheRead fell 70K → 10.5K in a
+// real session when it dropped). /tree and session start reset it.
+
+function captureApi() {
+  const handlers = new Map<string, ((event: any, ctx: any) => any)[]>();
+  const api = {
+    on(event: string, handler: (e: any, ctx: any) => any) {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+    tools: [] as any[],
+    commands: new Map<string, any>(),
+    registerTool(tool: any) { this.tools.push(tool); },
+    registerCommand(name: string, options: any) { this.commands.set(name, options); },
+  };
+  return { api, handlers };
+}
+
+function hookCtx(entries: any[], stateFile: string) {
+  return {
+    mode: "rpc",
+    hasUI: false,
+    ui: { notify: () => {}, confirm: async () => true, select: async () => undefined, input: async () => "", setStatus: () => {} },
+    model: { contextWindow: 200_000, id: "claude-test", api: "test-responses", provider: "p" },
+    getContextUsage: () => ({ tokens: 100_000, percent: 50 }),
+    sessionManager: {
+      buildContextEntries: () => entries,
+      getSessionId: () => "fold-anchor-sticky",
+      getSessionFile: () => stateFile,
+    },
+  };
+}
+
+const entry = (id: string, text: string) => ({ type: "message", id, parentId: null, timestamp: "", message: { role: "user", content: text, timestamp: Date.now() } });
+
+// Wire payload: item 1 carries ref m00001, item 2 is past every start used here.
+const wire = () => ({ model: "claude-test", input: [{ role: "developer", content: "sys" }, user("q1" + tag("m00001")), user("later" + tag("m00009"))] });
+
+test("anchor start is sticky when no range remains, and resets on /tree and session start", async () => {
+  const { api, handlers } = captureApi();
+  createAcpExtension({ modelContextLimit: 200_000, preserveRecentMessages: 1 })(api as any);
+  const stateFile = tmpPath("pai-acp-fold-anchor-sticky.session.json");
+  await rm(`${stateFile}.acp.json`, { force: true });
+  const BIG = "中".repeat(6000);
+  const ctx = hookCtx([entry("e1", BIG), entry("e2", BIG), entry("e3", BIG)], stateFile);
+  const context = () => handlers.get("context")![0]!({ type: "context", messages: [] }, ctx);
+  const send = async (payload: any = wire()) => {
+    const out = await handlers.get("before_provider_request")![0]!({ type: "before_provider_request", payload }, ctx);
+    assert.ok(!JSON.stringify(payload).includes("cache_control"), "raw payload must not be mutated");
+    return out;
+  };
+  const compress = async (id: string, startId: string, endId: string) => {
+    const tool = api.tools.find((t: any) => t.name === "compress")!;
+    const out = await tool.execute(id, { content: [{ startId, endId, summary: `folded ${startId}-${endId} for the sticky anchor test with enough summary length` }] }, undefined, undefined, ctx);
+    const text = typeof out === "string" ? out : out.content?.[0]?.text ?? String(out);
+    assert.match(text, /blocks: b\d+=/, text);
+  };
+
+  await context();
+  await compress("tc1", "m00001", "m00001");
+  await context(); // earliest viable start is now m00002
+  assert.ok(marked(await send(), 1), "anchor before m00002 marks the m00001 item");
+
+  for (const h of handlers.get("session_start") ?? []) await h({ type: "session_start" }, ctx);
+  assert.equal(await send(), undefined, "session start drops the remembered start");
+  await context();
+  assert.ok(marked(await send(), 1), "the next turn records the start again");
+
+  await compress("tc2", "m00002", "m00003");
+  await context(); // nothing viable remains
+  assert.ok(marked(await send(), 1), "no range left: keep the previous start");
+  // The kept start is rescanned against each payload, not a saved index.
+  const shifted = wire();
+  shifted.input.splice(1, 0, user("earlier" + tag("m00000")) as any);
+  assert.ok(marked(await send(shifted), 2), "a changed prefix moves the anchor with the m00001 item");
+
+  for (const h of handlers.get("session_tree") ?? []) await h({ type: "session_tree" }, ctx);
+  assert.equal(await send(), undefined, "/tree drops the remembered start");
+  await rm(`${stateFile}.acp.json`, { force: true });
 });

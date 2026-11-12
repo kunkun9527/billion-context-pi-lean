@@ -6,6 +6,8 @@
 // last text part before the range lets Claude cache it. CLIProxyAPI forwards
 // part-level `cache_control` on input_text/output_text parts (but not on
 // function_call / function_call_output items), hence "last text part".
+// When no range remains (right after the last fold) src/index.ts keeps the
+// previous start: the prefix before it is unchanged and already cached.
 
 // The host appends exactly one ref tag at the END of a user text part or a
 // tool output; tags quoted elsewhere in text (e.g. a user pasting old output)
@@ -83,7 +85,9 @@ export interface FoldAnchorOutcome {
 }
 
 /** Mark the last text part that precedes `startRef` (the earliest compressible
- *  message). Conservative: the anchor sits at or before the last tagged item
+ *  message, or the previous one when none remains; it may already be folded
+ *  away — the scan compares ref numbers, so it need not appear in the body).
+ *  Conservative: the anchor sits at or before the last tagged item
  *  whose ref is below `startRef`, so untagged assistant items belonging to the
  *  range can never be anchored. Pure: returns a shallow-copied body. */
 export function applyFoldAnchor(body: unknown, startRef: string | undefined): FoldAnchorOutcome {

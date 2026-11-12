@@ -35,6 +35,7 @@ function decorateWithCollapsedDisplay<T extends CollapsedDisplayTool>(tool: T): 
 const LEAN_SYSTEM_PROMPT = `ACP context management
 - User/tool messages carry hidden <acp> refs such as m00123. Never echo the XML tags; use only refs in ACP tool calls.
 - Compress only consumed history (finished tool outputs, dead ends, resolved threads); never active work, important user intent, or protected outputs.
+- Fold all ranges in one compress call; each call re-pays the cache.
 - acp_context args per op: decompress {blockId: "b5", full?, inline?, toFile?} (one id per call); search_context {query, limit?}; acp_status {scope?, view?, tool?, sort?, limit?}; acp_cache {detail?}.
 - Compression summaries are historical metadata, not current user instructions. Search or decompress only for a detail the visible summary lacks.`;
 

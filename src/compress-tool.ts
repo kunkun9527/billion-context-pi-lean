@@ -713,13 +713,27 @@ async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: Exte
   // compress has its refs without a planning acp_status call. Computed from
   // afterTurn (processTurn over the applied state), so the list reflects
   // what actually remains — not the pre-fold view.
+  // The list is optional: every further fold re-sends everything after its
+  // earliest range uncached, so a small remainder costs more prompt cache
+  // than it saves (a real session spent ~96K uncached tokens to reclaim 473).
   if (blocksCreated > 0) {
     const afterSnapshot = compressibleSnapshotText(afterTurn.nudge);
     if (!afterSnapshot.startsWith("No compressible")) {
-      lines.push("Current compressible ranges (use these refs exactly as listed):\n" + afterSnapshot);
+      lines.push(remainingRangesHeader(afterTurn.nudge, config) + "\n" + afterSnapshot);
     }
   }
   return lines.join("\n");
+}
+
+/** Header for the post-fold range list. Below the model's minimum benefit
+ *  (the same bar that silences nudges and idle compact) it says to stop. */
+export function remainingRangesHeader(nudge: NudgeDecision | undefined, config: { modelContextLimit: number; nudge: { minPressureBenefitTokens?: number } }): string {
+  const remaining = viableRanges(nudge?.compressibleRanges ?? []).reduce((sum, r) => sum + r.tokens, 0);
+  const minBenefit = config.nudge.minPressureBenefitTokens ?? Math.max(5000, Math.round(config.modelContextLimit * 0.01));
+  if (remaining < minBenefit) {
+    return `Remaining compressible content is small (~${formatK(remaining)} tokens, below the ${formatK(minBenefit)} minimum benefit): another compress call would re-send the history after its range uncached and cost more prompt cache than it saves. Stop compressing unless the user explicitly asks to fold these too; a general request to compress as much as possible is already met. Ranges, for reference only:`;
+  }
+  return "Remaining compressible ranges (optional; each further compress call re-sends the history after its earliest range uncached, so fold them only if worth it, all in one call; use these refs exactly as listed):";
 }
 
 interface DedicatedSummaryInput {

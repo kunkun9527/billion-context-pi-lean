@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, rm } from "node:fs/promises";
 import type { CompressionBlock, CompressionState } from "acp-kernel";
 import { createAcpExtension } from "../src/index.js";
-import { blockSpanLabel, compressPanelBlocks, isCompressNoopText, isCompressSuccessText, summaryFingerprintLine } from "../src/compress-tool.js";
+import { blockSpanLabel, compressPanelBlocks, isCompressNoopText, isCompressSuccessText, summaryFingerprintLine, remainingRangesHeader } from "../src/compress-tool.js";
 import { tmpPath } from "./tmp-path.js";
 
 // ─── helpers (mirror decompress-tool.test.ts) ──────────────────────────────
@@ -392,7 +392,7 @@ test("compress success result lists remaining compressible ranges, then goes qui
   assert.ok(first.includes("▣ ACP"), `first compress failed: ${first}`);
   assert.ok(!first.includes("Errors:"), `first compress rejected: ${first}`);
   assert.ok(
-    first.includes("Current compressible ranges (use these refs exactly as listed)"),
+    first.includes("Remaining compressible ranges (optional;") && first.includes("all in one call; use these refs exactly as listed"),
     `success must carry the remaining-ranges snapshot: ${first}`,
   );
   assert.ok(first.includes("m00002"), `snapshot must list the untouched range m00002: ${first}`);
@@ -402,9 +402,23 @@ test("compress success result lists remaining compressible ranges, then goes qui
   assert.ok(second.includes("▣ ACP"), `second compress failed: ${second}`);
   assert.ok(!second.includes("Errors:"), `second compress rejected: ${second}`);
   assert.ok(
-    !second.includes("Current compressible ranges"),
+    !second.includes("compressible ranges") && !second.includes("Remaining compressible"),
     `no snapshot noise once nothing viable remains: ${second}`,
   );
+});
+
+// A small remainder is not worth another fold: each call re-sends the
+// history after its range uncached (a real session re-paid ~96K to reclaim 473).
+test("remainingRangesHeader says stop below the minimum benefit, optional above it", () => {
+  const nudge = (tokens: number) => ({ compressibleRanges: [{ startRef: "m00010", endRef: "m00020", count: 11, tokens, chars: tokens * 4 }] }) as any;
+  const config = { modelContextLimit: 872_000, nudge: { minPressureBenefitTokens: 30_000 } };
+  const small = remainingRangesHeader(nudge(9_000), config);
+  assert.match(small, /small \(~9\.0K tokens, below the 30\.0K minimum benefit\)/);
+  assert.match(small, /Stop compressing unless the user explicitly asks to fold these too; a general request to compress as much as possible is already met/);
+  const large = remainingRangesHeader(nudge(40_000), config);
+  assert.match(large, /^Remaining compressible ranges \(optional;.*all in one call/);
+  // Default bar: max(5000, 1% of the limit), the same one nudges and idle compact use.
+  assert.match(remainingRangesHeader(nudge(6_000), { modelContextLimit: 872_000, nudge: {} }), /below the 8\.7K minimum benefit/);
 });
 
 // ─── #535 P1: per-block summary fingerprint lines ──────────────────────────
