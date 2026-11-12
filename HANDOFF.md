@@ -4,7 +4,7 @@
 
 已发布 **v0.4.0**（提交 `07ee173`，tag `v0.4.0`，GitHub Release 和 npm 都已发布）。发布前 `npm run check` 通过（源码测试 781 个、Lean 测试 27 个），`git diff --check` 通过；Spec 审查只有一条意见（`dist` 没有重建），已修复。注意：这个仓库里直接运行 `gh` 会默认指向上游 `ranxianglei/billion-context-pi`，发 Release 时要加 `--repo kunkun9527/billion-context-pi-lean`。
 
-v0.4.1（2026-11-12）修了两处：
+已发布 **v0.4.1**（2026-11-12，提交 `6c4f2c5`，tag `v0.4.1`，GitHub Release 和 npm 都已发布）。发布前 `npm run check` 通过（源码测试 784 个、Lean 测试 27 个），`git diff --check` 通过；Spec 审查有两条意见：措辞忽略了用户明确要求继续压缩的情况（已改）；hook 测试没覆盖前缀改变（已补）。起点往前移的 hook 测试没有补。这次修了两处：
 
 - **锚点在最后一次折叠后丢失**：真实会话「比较两个 MFG 解锁项目 (2)」（sid `01a1b815…`）里，用户让模型“尽量压缩”，模型连续折叠了 3 次。前两次压缩后，请求都读到了 70,143 的缓存；第三次之后已经没有可压缩范围，`acp.log` 记录 `reason=no-range`，缓存读取降到 10,548，96,043 token 被重写（EasyCLIProxyAPI `usage.db` 第 104098、104100 条）。Oracle 确认这是缓存性能 bug。修法：没有新范围时沿用上一次的起点（`src/index.ts`），在 session start、`/tree`、shutdown 时清空。仍按 ref 编号重新扫描，不保存 index。修复后能否读到约 70K 还没有实测：当时没有保存最终请求体，无法排除前缀本身也变了。
 - **连续小折叠**：每多折叠一次，就要把其后的历史重写一遍。现在 Lean 常驻提示要求一次 compress 调用传入全部范围；压缩结果里剩余的范围标注为可选，剩余总量低于 `minPressureBenefitTokens` 时提示停止。结果里仍然列出范围，这是 Oracle 的建议。
