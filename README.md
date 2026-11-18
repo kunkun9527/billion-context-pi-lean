@@ -9,7 +9,7 @@
 </div>
 
 <!-- token-benchmark:summary:start -->
-> **Always-on context: 503 tokens vs. 8,670 for upstream `billion-context-pi@0.1.83`, 94.2% less.**
+<p align="center"><img src="assets/chart.svg" alt="Always-on context: 8,670 tokens upstream, 503 Lean, 94.2% less" width="800"></p>
 <!-- token-benchmark:summary:end -->
 
 Context management for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent) that lets long sessions keep going: as context fills up, the model folds finished work into summary blocks, and the originals stay recoverable on demand.

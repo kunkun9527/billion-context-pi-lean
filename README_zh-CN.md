@@ -9,7 +9,7 @@
 </div>
 
 <!-- token-benchmark:summary:start -->
-> **常驻上下文：Lean 503 tokens，上游 `billion-context-pi@0.1.83` 8,670 tokens，少 94.2%。**
+<p align="center"><img src="assets/chart.zh-CN.svg" alt="常驻上下文：上游 8,670 tokens，精简版 503，少 94.2%" width="800"></p>
 <!-- token-benchmark:summary:end -->
 
 给 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent) 用的上下文管理扩展，让长会话能一直做下去：上下文快满时，模型把做完的部分折叠成摘要块，原文随时可以取回。
