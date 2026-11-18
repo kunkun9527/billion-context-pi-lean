@@ -1,7 +1,7 @@
 # billion-context-pi-lean
 
 <!-- token-benchmark:summary:start -->
-> **Token 基准：Lean 486，上游 `billion-context-pi@0.1.83` 8,670，减少 94.4%。**
+> **Token 基准：Lean 503，上游 `billion-context-pi@0.1.83` 8,670，减少 94.2%。**
 <!-- token-benchmark:summary:end -->
 > [查看我的完整 Pi 配置](https://github.com/kunkun9527/my-lean-pi-setup)
 
@@ -34,7 +34,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 | 离开一阵再回来 | 第一条请求按无缓存价格重写整段长上下文 | **[空闲压缩](#空闲压缩idle-compact)**：缓存过期前给模型一次压缩机会，回来后发出的请求更短 |
 | Claude 压缩后的提示缓存 | 在 `*responses` API 上自己不加缓存标记；CLIProxyAPI 这类代理只缓存系统提示词和最新一条消息，每次折叠后，没有变化的较早前缀也要按无缓存价格重写 | **Claude fold anchor**（默认开启，仅 Claude；设置面板里可关，对应 `acp.json` 的 `compress.claudeFoldAnchor`）：额外标记下次折叠不会动到的前缀，让它保持缓存（[CONFIGURATION.zh-CN.md](CONFIGURATION.zh-CN.md)） |
 | 修改设置 | 手动编辑 `acp.json` | **[`/acp-config`](#配置) 设置面板**：在 TUI 里选值，立即生效、不用重启；`acp.json` 照常可用 |
-| 工具和常驻提示词 | 5 个上下文工具 + 3 个子代理工具，约 8,700 token（`promptPack: "lean"` 时约 4,900） | `compress` + `acp_context`，486 token（[对比](#上下文占用对比)）。常驻提示词只保留调用前必须知道的规则，其余说明随压缩提醒、报错和工具结果给出 |
+| 工具和常驻提示词 | 5 个上下文工具 + 3 个子代理工具，约 8,700 token（`promptPack: "lean"` 时约 4,900） | `compress` + `acp_context`，503 token（[对比](#上下文占用对比)）。常驻提示词只保留调用前必须知道的规则，其余说明随压缩提醒、报错和工具结果给出 |
 | 系统提示词 | 返回整份系统提示词，在 Pi 1.x 上会丢掉之后加载的扩展追加的提示词 | 作为独立段落注入，其他扩展的内容保留 |
 | 子代理委派、自动更新 | 内置 | 已移除。子代理请用专门的扩展，它们的会话仍由 ACP 管理 |
 | bash 默认超时、工具输出上限 | 内置（`toolBashDefaultTimeout`、`toolOutputMaxBytes`） | 已移除：不属于上下文管理。Pi 自己会截断 bash/read/grep 的输出；超时交给 bash 工具或 bash 扩展 |
@@ -67,11 +67,11 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 
 | 版本 | 工具与提示词构成 | 合计 |
 | --- | --- | ---: |
-| Lean `billion-context-pi-lean@0.2.3` | `compress` (231) + `acp_context` (87) + 提示词 (168) | **486** |
+| Lean `billion-context-pi-lean@0.4.1` | `compress` (231) + `acp_context` (87) + 提示词 (185) | **503** |
 | 上游 `billion-context-pi@0.1.83`，开 `promptPack: "lean"` | `compress` (389) + `decompress` (271) + `search_context` (90) + `acp_status` (227) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + 提示词 (1,819) | **4,877** |
 | 上游 `billion-context-pi@0.1.83` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + 提示词 (4,945) | **8,670** |
 
-比上游默认配置少 **8,184 token（94.4%）**，比上游开 `lean` 提示词包少 4,391 token（90.0%）。其中 3 个 `acp_delegate*` 工具（共 1,877 token）属于子代理委派，本分支已删除这项功能；不算它们的话，分别少 92.8% 和 83.8%。
+比上游默认配置少 **8,167 token（94.2%）**，比上游开 `lean` 提示词包少 4,374 token（89.7%）。其中 3 个 `acp_delegate*` 工具（共 1,877 token）属于子代理委派，本分支已删除这项功能；不算它们的话，分别少 92.6% 和 83.2%。
 
 压缩提醒不在上表内，只在上下文快满时出现。配置专用摘要模型后，每次压缩提醒里的规则从约 1,460 token 降到约 220（[配置方法](#设置项)）。
 

@@ -1,7 +1,7 @@
 # billion-context-pi-lean
 
 <!-- token-benchmark:summary:start -->
-> **Token benchmark: Lean 486, upstream `billion-context-pi@0.1.83` 8,670 — 94.4% fewer.**
+> **Token benchmark: Lean 503, upstream `billion-context-pi@0.1.83` 8,670 — 94.2% fewer.**
 <!-- token-benchmark:summary:end -->
 > [See my full setup for Pi](https://github.com/kunkun9527/my-lean-pi-setup)
 
@@ -34,7 +34,7 @@ With **Idle compact** on, the same nudge is also shown once when you step away, 
 | Coming back after a break | The first request rewrites the whole long context at uncached prices | **[Idle compact](#idle-compact)**: before the cache expires, the model gets one chance to compress, so the request you send on return is shorter |
 | Claude prompt cache after a fold | No cache marker of its own on a `*responses` API; a proxy such as CLIProxyAPI caches only the system prompt and the latest message, so after each fold the unchanged older prefix is rewritten uncached | **Claude fold anchor** (on by default, Claude only; panel setting, `compress.claudeFoldAnchor` in `acp.json`): also marks the prefix the next fold will not touch, so it stays cached ([CONFIGURATION.md](CONFIGURATION.md)) |
 | Settings | Edit `acp.json` by hand | **[`/acp-config`](#configuration) panel**: pick values in the TUI, applied at once without restarting; `acp.json` still works |
-| Tools and resident prompt | 5 context tools + 3 delegation tools, about 8,700 tokens (4,900 with `promptPack: "lean"`) | `compress` + `acp_context`, 486 tokens ([benchmark](#context-footprint-benchmark)). The resident prompt keeps only rules needed before a call; the rest arrives with nudges, errors and tool results |
+| Tools and resident prompt | 5 context tools + 3 delegation tools, about 8,700 tokens (4,900 with `promptPack: "lean"`) | `compress` + `acp_context`, 503 tokens ([benchmark](#context-footprint-benchmark)). The resident prompt keeps only rules needed before a call; the rest arrives with nudges, errors and tool results |
 | System prompt | Returns a whole system prompt, which on Pi 1.x drops prompt additions from extensions loaded after it | Added as its own section; other extensions keep theirs |
 | Sub-agent delegation, auto-update | Built in | Removed. Use a dedicated sub-agent extension; ACP still manages their sessions |
 | bash default timeout, tool output cap | Built in (`toolBashDefaultTimeout`, `toolOutputMaxBytes`) | Removed: not context management. Pi already caps bash/read/grep output; leave timeouts to the bash tool or a bash extension |
@@ -67,11 +67,11 @@ With only this extension enabled, its recurring model-facing initialization cont
 
 | Variant | Tool and prompt contribution | Total |
 | --- | --- | ---: |
-| Lean `billion-context-pi-lean@0.2.3` | `compress` (231) + `acp_context` (87) + prompt (168) | **486** |
+| Lean `billion-context-pi-lean@0.4.1` | `compress` (231) + `acp_context` (87) + prompt (185) | **503** |
 | Upstream `billion-context-pi@0.1.83` with `promptPack: "lean"` | `compress` (389) + `decompress` (271) + `search_context` (90) + `acp_status` (227) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + prompt (1,819) | **4,877** |
 | Upstream `billion-context-pi@0.1.83` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + prompt (4,945) | **8,670** |
 
-This saves **8,184 tokens (94.4%)** against upstream's default, and 4,391 tokens (90.0%) against its `lean` prompt pack. The three `acp_delegate*` tools (1,877 tokens) belong to sub-agent delegation, which this fork removed; leaving them out, the savings are 92.8% and 83.8%.
+This saves **8,167 tokens (94.2%)** against upstream's default, and 4,374 tokens (89.7%) against its `lean` prompt pack. The three `acp_delegate*` tools (1,877 tokens) belong to sub-agent delegation, which this fork removed; leaving them out, the savings are 92.6% and 83.2%.
 
 Compression nudges come on top of this and only when context fills up. With a dedicated summary model, the rules in each nudge drop from about 1,460 tokens to about 220 ([setup](#settings)).
 
