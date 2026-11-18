@@ -1,15 +1,32 @@
+<div align="center">
+
 # billion-context-pi-lean
 
-<!-- token-benchmark:summary:start -->
-> **Token 基准：Lean 503，上游 `billion-context-pi@0.1.83` 8,670，减少 94.2%。**
-<!-- token-benchmark:summary:end -->
-> [查看我的完整 Pi 配置](https://github.com/kunkun9527/my-lean-pi-setup)
+**让 Pi 的会话连续跑上几天，摘要交给便宜模型写。**
 
-[English](README.md)
+[English](README.md) · 完整配置：[My Lean Pi Setup](https://github.com/kunkun9527/my-lean-pi-setup)
+
+</div>
+
+<!-- token-benchmark:summary:start -->
+> **常驻上下文：Lean 503 tokens，上游 `billion-context-pi@0.1.83` 8,670 tokens，少 94.2%。**
+<!-- token-benchmark:summary:end -->
 
 给 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent) 用的上下文管理扩展，让长会话能一直做下去：上下文快满时，模型把做完的部分折叠成摘要块，原文随时可以取回。
 
 本仓库是 [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi) **v0.1.83** 的分支，专注于运行稳定性和降低 token 消耗。它保留上游的压缩引擎（ACP），主要改动是：**摘要可以交给便宜模型写**，**上下文管理本身少花 token**，以及**你离开时趁提示缓存还没过期先压缩长会话**。上游已转向 [`billion-context`](https://github.com/ranxianglei/billion-context)；本分支停在 0.1.83，按需手工挑选上游修复，与上游没有隶属关系。
+
+## 安装
+
+```bash
+pi install npm:billion-context-pi-lean
+```
+
+要固定版本，在末尾加 `@<版本号>`，版本见 [Releases](https://github.com/kunkun9527/billion-context-pi-lean/releases)。也可以从 git 安装：`pi install git:github.com/kunkun9527/billion-context-pi-lean`。
+
+- 专用摘要模型需要 Pi 1.x 及以上。
+- 不要和 `billion-context-pi` 或 `billion-context` 同时启用，工具和钩子会注册两次。
+- 启用本扩展期间，Pi 自带的压缩会关闭。
 
 ## 工作方式
 
@@ -34,7 +51,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 | 离开一阵再回来 | 第一条请求按无缓存价格重写整段长上下文 | **[空闲压缩](#空闲压缩idle-compact)**：缓存过期前给模型一次压缩机会，回来后发出的请求更短 |
 | Claude 压缩后的提示缓存 | 在 `*responses` API 上自己不加缓存标记；CLIProxyAPI 这类代理只缓存系统提示词和最新一条消息，每次折叠后，没有变化的较早前缀也要按无缓存价格重写 | **Claude fold anchor**（默认开启，仅 Claude；设置面板里可关，对应 `acp.json` 的 `compress.claudeFoldAnchor`）：额外标记下次折叠不会动到的前缀，让它保持缓存（[CONFIGURATION.zh-CN.md](CONFIGURATION.zh-CN.md)） |
 | 修改设置 | 手动编辑 `acp.json` | **[`/acp-config`](#配置) 设置面板**：在 TUI 里选值，立即生效、不用重启；`acp.json` 照常可用 |
-| 工具和常驻提示词 | 5 个上下文工具 + 3 个子代理工具，约 8,700 token（`promptPack: "lean"` 时约 4,900） | `compress` + `acp_context`，503 token（[对比](#上下文占用对比)）。常驻提示词只保留调用前必须知道的规则，其余说明随压缩提醒、报错和工具结果给出 |
+| 工具和常驻提示词 | 5 个上下文工具 + 3 个子代理工具，约 8,700 token（`promptPack: "lean"` 时约 4,900） | `compress` + `acp_context`，503 token（[对比](#token-对比)）。常驻提示词只保留调用前必须知道的规则，其余说明随压缩提醒、报错和工具结果给出 |
 | 系统提示词 | 返回整份系统提示词，在 Pi 1.x 上会丢掉之后加载的扩展追加的提示词 | 作为独立段落注入，其他扩展的内容保留 |
 | 子代理委派、自动更新 | 内置 | 已移除。子代理请用专门的扩展，它们的会话仍由 ACP 管理 |
 | bash 默认超时、工具输出上限 | 内置（`toolBashDefaultTimeout`、`toolOutputMaxBytes`） | 已移除：不属于上下文管理。Pi 自己会截断 bash/read/grep 的输出；超时交给 bash 工具或 bash 扩展 |
@@ -61,11 +78,11 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 
 </details>
 
-## 上下文占用对比
+## Token 对比
 
-只启用本扩展时，模型每次请求都会看到的初始化内容如下：
+只启用这一个扩展时，模型每轮都会读到的内容：
 
-| 版本 | 工具与提示词构成 | 合计 |
+| 版本 | 构成 | 合计 |
 | --- | --- | ---: |
 | Lean `billion-context-pi-lean@0.4.1` | `compress` (231) + `acp_context` (87) + 提示词 (185) | **503** |
 | 上游 `billion-context-pi@0.1.83`，开 `promptPack: "lean"` | `compress` (389) + `decompress` (271) + `search_context` (90) + `acp_status` (227) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + 提示词 (1,819) | **4,877** |
@@ -75,19 +92,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 
 压缩提醒不在上表内，只在上下文快满时出现。配置专用摘要模型后，每次压缩提醒里的规则从约 1,460 token 降到约 220（[配置方法](#设置项)）。
 
-在 Pi 1.3.0 上用 `npm run measure` 测得，每个版本各用一个临时进程，工作目录和配置都是空的。不计内置工具、skill、上下文文件、会话历史、用户消息、无关扩展、运行时 UI 和斜杠命令；计入 `before_agent_start` 追加的内容。Token 按 `ceil(字符数 / 4)` 固定估算，不是服务商分词器的计费数。
-
-## 安装
-
-```bash
-pi install npm:billion-context-pi-lean
-```
-
-要固定版本，在末尾加 `@<版本号>`，版本见 [Releases](https://github.com/kunkun9527/billion-context-pi-lean/releases)。也可以从 git 安装：`pi install git:github.com/kunkun9527/billion-context-pi-lean`。
-
-- 专用摘要模型需要 Pi 1.x 及以上。
-- 不要和 `billion-context-pi` 或 `billion-context` 同时启用，工具和钩子会注册两次。
-- 启用本扩展期间，Pi 自带的压缩会关闭。
+<sub>测量方式：在 Pi 1.3.0 上用 `npm run measure`，每个版本在独立的临时进程里测，工作目录和配置都是空的。不计内置工具、Skills、上下文文件、会话历史、用户消息、其他扩展、运行时 UI 和 Slash Commands；计入 `before_agent_start` 注入的内容。Token 按 `ceil(字符数 / 4)` 估算，不是实际计费值。</sub>
 
 ## 配置
 

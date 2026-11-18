@@ -1,15 +1,32 @@
+<div align="center">
+
 # billion-context-pi-lean
 
-<!-- token-benchmark:summary:start -->
-> **Token benchmark: Lean 503, upstream `billion-context-pi@0.1.83` 8,670 — 94.2% fewer.**
-<!-- token-benchmark:summary:end -->
-> [See my full setup for Pi](https://github.com/kunkun9527/my-lean-pi-setup)
+**Pi sessions that run for days, with a cheap model writing the summaries.**
 
-[中文](https://github.com/kunkun9527/billion-context-pi-lean/blob/main/README_zh-CN.md)
+[简体中文](https://github.com/kunkun9527/billion-context-pi-lean/blob/main/README_zh-CN.md) · Full setup: [My Lean Pi Setup](https://github.com/kunkun9527/my-lean-pi-setup)
+
+</div>
+
+<!-- token-benchmark:summary:start -->
+> **Always-on context: 503 tokens vs. 8,670 for upstream `billion-context-pi@0.1.83`, 94.2% less.**
+<!-- token-benchmark:summary:end -->
 
 Context management for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent) that lets long sessions keep going: as context fills up, the model folds finished work into summary blocks, and the originals stay recoverable on demand.
 
 This is a fork of [`billion-context-pi`](https://github.com/ranxianglei/billion-context-pi) **v0.1.83** that focuses on runtime stability and on spending fewer tokens. It keeps upstream's compression engine (ACP); the main additions are that **a cheap model can write the summaries**, that **context management itself costs fewer tokens**, and that **a long session is compressed while you are away**, before the prompt cache expires. Upstream has moved on to [`billion-context`](https://github.com/ranxianglei/billion-context); this fork stays on 0.1.83 and picks upstream fixes by hand. It is not affiliated with upstream.
+
+## Install
+
+```bash
+pi install npm:billion-context-pi-lean
+```
+
+Append `@<version>` to pin a version from [Releases](https://github.com/kunkun9527/billion-context-pi-lean/releases). Installing from git works too: `pi install git:github.com/kunkun9527/billion-context-pi-lean`.
+
+- The dedicated summary model needs Pi 1.x or later.
+- Do not enable it together with `billion-context-pi` or `billion-context`: tools and hooks would register twice.
+- Pi's built-in compaction is turned off while this extension is active.
 
 ## How it works
 
@@ -34,7 +51,7 @@ With **Idle compact** on, the same nudge is also shown once when you step away, 
 | Coming back after a break | The first request rewrites the whole long context at uncached prices | **[Idle compact](#idle-compact)**: before the cache expires, the model gets one chance to compress, so the request you send on return is shorter |
 | Claude prompt cache after a fold | No cache marker of its own on a `*responses` API; a proxy such as CLIProxyAPI caches only the system prompt and the latest message, so after each fold the unchanged older prefix is rewritten uncached | **Claude fold anchor** (on by default, Claude only; panel setting, `compress.claudeFoldAnchor` in `acp.json`): also marks the prefix the next fold will not touch, so it stays cached ([CONFIGURATION.md](CONFIGURATION.md)) |
 | Settings | Edit `acp.json` by hand | **[`/acp-config`](#configuration) panel**: pick values in the TUI, applied at once without restarting; `acp.json` still works |
-| Tools and resident prompt | 5 context tools + 3 delegation tools, about 8,700 tokens (4,900 with `promptPack: "lean"`) | `compress` + `acp_context`, 503 tokens ([benchmark](#context-footprint-benchmark)). The resident prompt keeps only rules needed before a call; the rest arrives with nudges, errors and tool results |
+| Tools and resident prompt | 5 context tools + 3 delegation tools, about 8,700 tokens (4,900 with `promptPack: "lean"`) | `compress` + `acp_context`, 503 tokens ([benchmark](#token-comparison)). The resident prompt keeps only rules needed before a call; the rest arrives with nudges, errors and tool results |
 | System prompt | Returns a whole system prompt, which on Pi 1.x drops prompt additions from extensions loaded after it | Added as its own section; other extensions keep theirs |
 | Sub-agent delegation, auto-update | Built in | Removed. Use a dedicated sub-agent extension; ACP still manages their sessions |
 | bash default timeout, tool output cap | Built in (`toolBashDefaultTimeout`, `toolOutputMaxBytes`) | Removed: not context management. Pi already caps bash/read/grep output; leave timeouts to the bash tool or a bash extension |
@@ -61,11 +78,11 @@ Details: [CHANGELOG.md](CHANGELOG.md), [MAINTENANCE.md](MAINTENANCE.md) (Chinese
 
 </details>
 
-## Context footprint benchmark
+## Token comparison
 
-With only this extension enabled, its recurring model-facing initialization contribution is:
+With only this extension enabled, what the model reads on every turn:
 
-| Variant | Tool and prompt contribution | Total |
+| Variant | Breakdown | Total |
 | --- | --- | ---: |
 | Lean `billion-context-pi-lean@0.4.1` | `compress` (231) + `acp_context` (87) + prompt (185) | **503** |
 | Upstream `billion-context-pi@0.1.83` with `promptPack: "lean"` | `compress` (389) + `decompress` (271) + `search_context` (90) + `acp_status` (227) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + prompt (1,819) | **4,877** |
@@ -75,19 +92,7 @@ This saves **8,167 tokens (94.2%)** against upstream's default, and 4,374 tokens
 
 Compression nudges come on top of this and only when context fills up. With a dedicated summary model, the rules in each nudge drop from about 1,460 tokens to about 220 ([setup](#settings)).
 
-Measured with `npm run measure` on Pi 1.3.0, each variant in a separate temporary process with an empty working directory and configuration. Built-in tools, skills, context files, session history, user messages, unrelated extensions, runtime UI, and slash commands are excluded; `before_agent_start` additions are included. Tokens are a fixed character-proxy estimate using `ceil(characters / 4)`, not provider tokenizer billing.
-
-## Install
-
-```bash
-pi install npm:billion-context-pi-lean
-```
-
-Append `@<version>` to pin a version from [Releases](https://github.com/kunkun9527/billion-context-pi-lean/releases). Installing from git works too: `pi install git:github.com/kunkun9527/billion-context-pi-lean`.
-
-- The dedicated summary model needs Pi 1.x or later.
-- Do not enable it together with `billion-context-pi` or `billion-context`: tools and hooks would register twice.
-- Pi's built-in compaction is turned off while this extension is active.
+<sub>Method: `npm run measure` on Pi 1.3.0, each variant measured in its own temporary process with an empty working directory and configuration. Built-in tools, skills, context files, session history, user messages, other extensions, runtime UI and slash commands are not counted; `before_agent_start` additions are. Tokens are estimated as `ceil(characters / 4)`, not billed tokens.</sub>
 
 ## Configuration
 
