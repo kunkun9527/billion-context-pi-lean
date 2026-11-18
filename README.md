@@ -110,6 +110,16 @@ The panel lists these, most used first.
 
 Context threshold, Nudge interval and Minimum benefit depend on the model's window and price, so the panel sets them for the **current model only**; switch models to set another one. `inherit` drops the model's own value; a provider-wide or global value from `acp.json`, or else the default, applies.
 
+**Nudge interval is not a context size.** It counts only old content that can be compressed, measured by ACP's own rough estimate, which runs below the tokens you are billed for. So when the nudge appears, context is roughly what was left after the last compress plus about 1.9 × Nudge interval. In my Opus sessions (1M window, mostly Chinese), about 54k is left after a compress:
+
+| Nudge interval | Context when the nudge appears |
+|---|---|
+| 50K (default) | about 150k |
+| 70K (what I use) | about 185k; the measured median over 42 nudges was 184k |
+| 100K | about 245k |
+
+The 1.9 ratio depends on language and on how much of your context is tool output, so treat the table as a starting point: watch Pi's context meter when a nudge appears and adjust. For how to pick a target size, see [Why compact at 150k–200k](https://github.com/kunkun9527/my-lean-pi-setup/blob/main/docs/long-context.md).
+
 Regardless of these settings, at 95% of the window ACP cuts large tool outputs as a last resort.
 
 ### Idle compact

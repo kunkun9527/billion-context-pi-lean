@@ -110,6 +110,16 @@ pi install npm:billion-context-pi-lean
 
 Context threshold、Nudge interval、Minimum benefit 跟模型的窗口和价格有关，所以面板只为**当前模型**设置它们；要改别的模型，先切换过去。选 `inherit`（继承）会去掉这个模型自己的值，改用 `acp.json` 里 provider 级或全局的值，都没有就用默认值。
 
+**Nudge interval 不是上下文大小。**它只统计可以压缩的旧内容，而且用的是 ACP 自己的粗略估算，比实际计费的 token 少。所以收到提醒时，上下文大约等于“上次压缩后剩下的” + 约 1.9 × Nudge interval。我的 Opus 会话（1M 窗口，以中文为主）压缩后大约剩 54k：
+
+| Nudge interval | 收到提醒时的上下文 |
+|---|---|
+| 50K（默认） | 约 150k |
+| 70K（我在用） | 约 185k；实测 42 次提醒的中位数是 184k |
+| 100K | 约 245k |
+
+1.9 这个比例跟语言、工具输出占多少有关，表里的数只能当起点：收到提醒时看一眼 Pi 的上下文用量，再调整。目标大小怎么选，见[为什么把压缩点设在 150k–200k](https://github.com/kunkun9527/my-lean-pi-setup/blob/main/docs/long-context.zh-CN.md)。
+
 不论这些怎么设，上下文到窗口 95% 时，ACP 都会兜底截断大的工具输出。
 
 ### 空闲压缩（Idle compact）
