@@ -84,7 +84,7 @@ With only this extension enabled, what the model reads on every turn:
 
 | Variant | Breakdown | Total |
 | --- | --- | ---: |
-| Lean `billion-context-pi-lean@0.4.1` | `compress` (231) + `acp_context` (87) + prompt (185) | **503** |
+| Lean `billion-context-pi-lean@0.4.2` | `compress` (231) + `acp_context` (87) + prompt (185) | **503** |
 | Upstream `billion-context-pi@0.1.83` with `promptPack: "lean"` | `compress` (389) + `decompress` (271) + `search_context` (90) + `acp_status` (227) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + prompt (1,819) | **4,877** |
 | Upstream `billion-context-pi@0.1.83` | `compress` (549) + `decompress` (546) + `search_context` (210) + `acp_status` (339) + `acp_cache` (204) + `acp_delegate` (1,452) + `acp_delegate_wait` (342) + `acp_delegate_cancel` (83) + prompt (4,945) | **8,670** |
 
