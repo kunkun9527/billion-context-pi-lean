@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.2 (2026-11-21)
+
+- fix: growth nudges fire again when the provider reading and the local estimate are close. The meter re-anchored its growth baseline every time the larger of the two flipped, and near-tied readings flip back and forth turn to turn, so growth never reached the nudge floor and the first nudge waited for the 75%/95% pressure bands. A switch now needs one reading to lead the other by more than max(1000 tokens, 10% of the larger); inside that band the current one stays. Ported from upstream billion-context-pi #598 (`27363db`). The `scale-flip-reanchor` log line now carries `hostFloor` and `sentTokens`.
+
 ## v0.4.1 (2026-11-12)
 
 - fix: the Claude fold anchor no longer drops after the last fold. With no compressible range left it keeps the previous start, whose prefix is unchanged and already cached. In a real Opus session the request after such a fold read 10.5K cached tokens instead of the 70.1K the two folds before it kept. The remembered start is reset on session start, `/tree` and shutdown.

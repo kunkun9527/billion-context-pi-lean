@@ -150,3 +150,73 @@ test("no reset when the scale is stable (baseline keeps accumulating same-source
   assert.equal(afterB.nudge.lastPerMessageNudgeTokens, baselineA, "stable scale keeps the baseline (no spurious reset)");
   await rm(`${STATE_FILE}.acp.json`, { force: true });
 });
+
+// Upstream #598 (27363db): near-tied rulers jitter across the equality line
+// turn-to-turn; every micro-crossing used to re-anchor the growth baselines, so
+// growth could never accumulate to growthFloor. A flip now requires one ruler to
+// overtake the other by more than max(1000, 10% of the larger ruler), and
+// dominance sticks inside that band. Unlike the upstream fixtures, each turn here
+// carries a real provider anchor: lean only trusts getContextUsage() when the
+// latest valid assistant usage has no later context edit (measuredHostTokens).
+
+const anchored = (id: string, tokens: number) => ({
+  type: "message", id, parentId: null, timestamp: "",
+  message: { role: "assistant", content: `ack ${id}`, timestamp: Date.now(), usage: { input: tokens, cacheRead: 0, cacheWrite: 0 } },
+});
+
+async function estimateBaseline(handlers: Map<string, ((e: any, ctx: any) => any)[]>): Promise<{ entries: any[]; E: number }> {
+  const entries = bulkEntries();
+  branchEntries = entries;
+  await fire(handlers, entries, fakeCtx(0));
+  const E = JSON.parse(await readFile(`${STATE_FILE}.acp.json`, "utf-8")).nudge.lastPerMessageNudgeTokens;
+  assert.ok(E > 10_000, `estimate-scale baseline established (got ${E})`);
+  return { entries, E };
+}
+
+async function anchoredTurn(handlers: Map<string, ((e: any, ctx: any) => any)[]>, prev: any[], id: string, tokens: number) {
+  const entries = [...prev, anchored(id, tokens)];
+  branchEntries = entries;
+  await fire(handlers, entries, fakeCtx(tokens));
+  return { entries, state: JSON.parse(await readFile(`${STATE_FILE}.acp.json`, "utf-8")) };
+}
+
+test("micro-flips inside the dead-band no longer re-anchor the growth baseline (#598)", async () => {
+  await rm(`${STATE_FILE}.acp.json`, { force: true });
+  const { api, handlers } = captureApi();
+  createAcpExtension({ modelContextLimit: 180_000 })(api as any);
+  const { entries: t1, E } = await estimateBaseline(handlers);
+
+  // Provider floor 3% under, then 3% over, then 3% under the estimate: the raw
+  // boolean crosses twice, but never by more than the dead-band.
+  const t2 = await anchoredTurn(handlers, t1, "e21", Math.round(E * 0.97));
+  const t3 = await anchoredTurn(handlers, t2.entries, "e22", Math.round(E * 1.03));
+  assert.equal(t3.state.nudge.lastPerMessageNudgeTokens, E, "sub-band crossing keeps the baseline");
+  const t4 = await anchoredTurn(handlers, t3.entries, "e23", Math.round(E * 0.97));
+  assert.equal(t4.state.nudge.lastPerMessageNudgeTokens, E, "repeated micro-crossings keep accumulating on the same baseline");
+  await rm(`${STATE_FILE}.acp.json`, { force: true });
+});
+
+test("a ruler switch beyond the dead-band re-anchors once, and dominance sticks on a sub-band return (#598)", async () => {
+  const logFile = process.env.ACP_LOG_FILE!;
+  await rm(`${STATE_FILE}.acp.json`, { force: true });
+  const { api, handlers } = captureApi();
+  createAcpExtension({ modelContextLimit: 180_000 })(api as any);
+  const { entries: t1, E } = await estimateBaseline(handlers);
+  const before = await readFile(logFile, "utf-8").catch(() => "");
+
+  // Provider floor overtakes the estimate by 15% (> 10% band): genuine switch.
+  const t2 = await anchoredTurn(handlers, t1, "e21", Math.round(E * 1.15));
+  const B2 = t2.state.nudge.lastPerMessageNudgeTokens;
+  assert.ok(B2 >= Math.round(E * 1.1), `re-anchored onto the provider scale (was ${E}, now ${B2})`);
+
+  // Back just under the estimate: inside the band, so the host ruler stays
+  // dominant instead of flipping back and resetting the baseline again.
+  const t3 = await anchoredTurn(handlers, t2.entries, "e22", Math.round(E * 0.99));
+  assert.equal(t3.state.nudge.lastPerMessageNudgeTokens, B2, "sub-band return does not flip dominance back");
+
+  const lines = (await readFile(logFile, "utf-8")).slice(before.length).split("\n").filter((l) => l.includes("event=scale-flip-reanchor"));
+  assert.equal(lines.length, 1, "exactly one reanchor logged (the genuine switch)");
+  assert.equal(Number(/hostFloor=(\d+)/.exec(lines[0]!)?.[1]), Math.round(E * 1.15), "log carries the flipping turn's provider floor");
+  assert.match(lines[0]!, /sentTokens=\d+/);
+  await rm(`${STATE_FILE}.acp.json`, { force: true });
+});

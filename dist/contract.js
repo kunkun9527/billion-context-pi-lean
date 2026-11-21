@@ -1,7 +1,7 @@
 import {
   SIDECAR_SCHEMA_VERSION,
   sidecarProducer
-} from "./chunk-UMW2JJDB.js";
+} from "./chunk-33425RME.js";
 export {
   SIDECAR_SCHEMA_VERSION,
   sidecarProducer

@@ -35,10 +35,12 @@ export interface AcpRuntime {
      *  that cycles through many sessions doesn't accumulate them. */
     throttleDrop: (sid: string) => void;
     /** Per-session tokenCount scale tracker (estimate vs provider). Returns true
-     *  when the scale just flipped (stale↔not-stale) so the caller can reset the
-     *  growth baseline — a cross-scale delta is a false artifact, not real growth
-     *  (issue #267). The first observation for a session never reports a flip. */
-    noteTokenScale: (sid: string, stale: boolean) => boolean;
+     *  when the dominant ruler (hostFloor vs sentTokens) just switched by more
+     *  than the hysteresis dead-band, so the caller can reset the growth baseline
+     *  — a cross-scale delta is a false artifact, not real growth (issue #267).
+     *  Near-tied rulers jittering inside the band do NOT report a flip (#598).
+     *  The first observation for a session never reports a flip. */
+    noteTokenScale: (sid: string, hostFloor: number, sentTokens: number) => boolean;
     /** Drop a session's token-scale tracker (session_shutdown). */
     dropTokenScale: (sid: string) => void;
     store: SessionStateStore;

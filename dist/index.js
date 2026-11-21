@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-UMW2JJDB.js";
+} from "./chunk-33425RME.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -19476,14 +19476,25 @@ function createRuntime(adapter) {
     if (ep) ep.reset();
     throttleEpisodes.delete(sid);
   }
-  const tokenScaleStale = /* @__PURE__ */ new Map();
-  function noteTokenScale(sid, stale) {
-    const prev = tokenScaleStale.get(sid);
-    tokenScaleStale.set(sid, stale);
-    return prev !== void 0 && prev !== stale;
+  const SCALE_FLIP_BAND_RATIO = 0.1;
+  const SCALE_FLIP_BAND_MIN = 1e3;
+  const tokenScaleDominant = /* @__PURE__ */ new Map();
+  function noteTokenScale(sid, hostFloor, sentTokens) {
+    const prev = tokenScaleDominant.get(sid);
+    if (prev === void 0) {
+      tokenScaleDominant.set(sid, sentTokens >= hostFloor ? "est" : "host");
+      return false;
+    }
+    const band = Math.max(SCALE_FLIP_BAND_MIN, SCALE_FLIP_BAND_RATIO * Math.max(hostFloor, sentTokens));
+    let dom = prev;
+    if (prev === "est" && hostFloor - sentTokens > band) dom = "host";
+    else if (prev === "host" && sentTokens - hostFloor > band) dom = "est";
+    if (dom === prev) return false;
+    tokenScaleDominant.set(sid, dom);
+    return true;
   }
   function dropTokenScale(sid) {
-    tokenScaleStale.delete(sid);
+    tokenScaleDominant.delete(sid);
   }
   const HOST_USAGE_WINDOW = 4;
   const HOST_USAGE_MIN_SAMPLES = 3;
@@ -20184,7 +20195,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.4.1";
+    return "0.4.2";
   } catch {
     return "dev";
   }
@@ -21050,7 +21061,7 @@ async function statusReport(runtime, ctx) {
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m2) => m2.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
   const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
-  const versionStr = "0.4.1" ? `billion-context-pi@${"0.4.1"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const versionStr = "0.4.2" ? `billion-context-pi@${"0.4.2"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -22276,7 +22287,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     const sid = ctx.sessionManager.getSessionId();
     forgetFoldAnchor(sid);
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.1" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.2" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {
@@ -22379,7 +22390,7 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
       if (runtime.noteSizeDivergence(sid, sizeDivergent)) {
         logWarn("turn", { sid, event: "size-divergence", est: tokenCount, host: realPromptTokens, ratio: Number((tokenCount / realPromptTokens).toFixed(2)), stable: hostUsageStable });
       }
-      if (runtime.noteTokenScale(sid, hostFloor <= sentTokens)) {
+      if (runtime.noteTokenScale(sid, hostFloor, sentTokens)) {
         state.nudge.lastNudgeShownTokens = state.nudge.lastNudgeShownTokens > 0 ? tokenCount : 0;
         state.nudge.lastPerMessageNudgeTokens = state.nudge.lastPerMessageNudgeTokens > 0 ? tokenCount : 0;
         const reanchored = {};
@@ -22388,7 +22399,7 @@ function wireContextTransform(pi, runtime, standDownIfProxied, idle) {
         }
         state.nudge.lastShownByTier = reanchored;
         runtime.clearNudgeTokenStamps(sid);
-        logInfo("growth-scale", { sid, event: "scale-flip-reanchor", estScaleWins: hostFloor <= sentTokens, predates, tokenCount });
+        logInfo("growth-scale", { sid, event: "scale-flip-reanchor", estScaleWins: sentTokens >= hostFloor, predates, hostFloor, sentTokens, tokenCount });
       }
       debug.event("context-in", {
         sid,

@@ -14,7 +14,7 @@ function populate(runtime: ReturnType<typeof createRuntime>, sid: string) {
   runtime.noteTruncationSkipped(sid, true);
   runtime.noteLatestUserOverLimit(sid, true);
   runtime.noteDegenerationNotice(sid, "100:x");
-  runtime.noteTokenScale(sid, true);
+  runtime.noteTokenScale(sid, 0, 10_000);
   runtime.noteDeadCompress(sid, "range");
   runtime.setLastSentMessages(sid, []);
   runtime.noteSentViewCount(sid, { viewTokens: 100, rawTokens: 200, blockSig: "0|", history: { count: 0, firstId: null, lastId: null }, limit: 1000, usable: true });
@@ -50,7 +50,7 @@ test("startup resets turn-local tracking and aborts throttle sleep without forge
   assert.equal(overflow.armed, true);
   assert.equal(overflow.learnedWindowFor("small"), 130_000);
   assert.deepEqual(runtime.getLastSentMessages("start"), [], "startup must not drop the captured session-summary prefix");
-  assert.equal(runtime.noteTokenScale("start", true), false, "startup preserves the existing token-scale episode");
+  assert.equal(runtime.noteTokenScale("start", 20_000, 10_000), true, "startup preserves the existing token-scale episode");
   assert.equal(runtime.throttleFor("start"), throttle);
   assert.equal(throttle.state.attempts, 0);
   assert.equal(sleeper.signal.aborted, true);
@@ -69,7 +69,7 @@ test("shutdown releases only the target session and is safe to repeat", () => {
   assert.notEqual(runtime.throttleFor("released"), released.throttle);
   assert.equal(runtime.getLastSentMessages("released"), null);
   assert.equal(runtime.noteDeadCompress("released", "range"), 1);
-  assert.equal(runtime.noteTokenScale("released", false), false);
+  assert.equal(runtime.noteTokenScale("released", 20_000, 10_000), false, "release forgets the token-scale episode");
   assert.equal(runtime.overflowFor("other"), other.overflow);
   assert.equal(runtime.throttleFor("other"), other.throttle);
   assert.equal(other.sleeper.signal.aborted, false);

@@ -7,7 +7,7 @@ var __export = (target, all) => {
 // src/contract.ts
 var SIDECAR_SCHEMA_VERSION = 1;
 function sidecarProducer() {
-  return `billion-context-pi@${true ? "0.4.1" : "dev"}`;
+  return `billion-context-pi@${true ? "0.4.2" : "dev"}`;
 }
 
 export {
@@ -15,4 +15,4 @@ export {
   SIDECAR_SCHEMA_VERSION,
   sidecarProducer
 };
-//# sourceMappingURL=chunk-UMW2JJDB.js.map
+//# sourceMappingURL=chunk-33425RME.js.map

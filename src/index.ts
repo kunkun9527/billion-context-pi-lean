@@ -370,11 +370,13 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       if (runtime.noteSizeDivergence(sid, sizeDivergent)) {
         logWarn("turn", { sid, event: "size-divergence", est: tokenCount, host: realPromptTokens, ratio: Number((tokenCount / realPromptTokens).toFixed(2)), stable: hostUsageStable });
       }
-      // Growth scale guard (issue #267, re-anchored in #455): the meter switches
-      // rulers when the dominant source flips between the provider floor and the
-      // local estimate (hostFloor vs sentTokens, not raw staleness — a stale anchor
-      // whose adjusted floor still dominates is not a switch, #325). A growth delta
-      // spanning that switch is a false artifact, not real growth.
+      // Growth scale guard (issue #267, re-anchored in #455, hysteresis in #598):
+      // the meter switches rulers when one ruler clearly overtakes the other
+      // (hostFloor vs sentTokens, not raw staleness — a stale anchor whose adjusted
+      // floor still dominates is not a switch, #325). A growth delta spanning that
+      // switch is a false artifact, not real growth. Near-tied rulers jitter across
+      // the equality line turn-to-turn; without the dead-band every micro-crossing
+      // re-anchored the baselines and growth could never reach growthFloor (#598).
       // Zeroing the baselines (the original fix) re-armed the kernel's one-shot
       // first-sight-mass bypass on EVERY flip (it requires
       // lastNudgeShownTokens === 0 && baseline === 0) — flips happen twice per
@@ -384,7 +386,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
       // reference resets to zero, cadence baselines stay meaningful on the new
       // ruler, and the mass bypass keeps its consumed state. Genuine cold starts
       // (references already 0) are untouched and keep their one-shot.
-      if (runtime.noteTokenScale(sid, hostFloor <= sentTokens)) {
+      if (runtime.noteTokenScale(sid, hostFloor, sentTokens)) {
         state.nudge.lastNudgeShownTokens = state.nudge.lastNudgeShownTokens > 0 ? tokenCount : 0;
         state.nudge.lastPerMessageNudgeTokens = state.nudge.lastPerMessageNudgeTokens > 0 ? tokenCount : 0;
         const reanchored: Record<number, number> = {};
@@ -393,7 +395,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, standDownIf
         }
         state.nudge.lastShownByTier = reanchored;
         runtime.clearNudgeTokenStamps(sid);
-        logInfo("growth-scale", { sid, event: "scale-flip-reanchor", estScaleWins: hostFloor <= sentTokens, predates, tokenCount });
+        logInfo("growth-scale", { sid, event: "scale-flip-reanchor", estScaleWins: sentTokens >= hostFloor, predates, hostFloor, sentTokens, tokenCount });
       }
       debug.event("context-in", {
         sid,

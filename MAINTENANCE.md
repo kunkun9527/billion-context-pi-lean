@@ -123,6 +123,13 @@
 
 `git fetch upstream`，看 `upstream/master` 和 [billion-context](https://github.com/ranxianglei/billion-context) 的 `fix` 提交，只挑和本仓库行为相关的，`git cherry-pick -x` 或手工移植，按上面的流程验证。冲突主要集中在 `src/compress-tool.ts` 的 `handleCompress` 和 `src/messages.ts`。只涉及 delegate/fleet/subagent 的上游提交直接跳过；混在一起的提交只移植非子代理部分。上游新增工具时，在 `lean/index.ts` 把低频工具加入 `LOW_FREQUENCY_TOOLS`，并检查新的模型可见文本是否需要补改写规则。
 
+2026-11-21 评估 `v0.1.83..upstream/master` 的 10 个提交（上游 npm 仍是 0.1.83，另经 Oracle 独立审查）：
+
+- #598 已移植（0.4.2，手工移植 `27363db`）：`runtime.noteTokenScale(sid, hostFloor, sentTokens)` 记住当前占优的计数，挑战方要严格超过 `max(1000, 较大值×10%)` 才算切换；`scale-flip-reanchor` 日志带 `hostFloor`/`sentTokens`。上游测试用无锚夹具，lean 的 `measuredHostTokens` 在无锚时归零，不能直接搬；`tests/growth-scale-flip.test.ts` 里的两条 #598 用例每轮都带真实 usage 锚。
+- #600/#601（`7a944fc`、`5d10c7d`）不移植：上游在失败轮回退到上次真实读数、无锚时仍信 tree-sum；lean 的 `measuredHostTokens` 在无锚或锚后有 `context_edit` 时一律归零、退回发送视图估算，策略不同但已由 `tests/floor-stale.test.ts` 锁定。无 edit 的失败轮仍接受旧锚；Pi 此时用旧 usage 加尾部估算，不是整树重估。若以后有宿主在这种轮次回报整树总量，再考虑上游的 `fresh`/`lastRealTokens` 方案。
+- #605（学习式 k̂ 校准，`ecdb8ec`）和合并提交 `3a1fbce` 暂缓：与本仓库的稳定读数 ×1.2 上限（#455）重叠。若要做，必须按请求和新 usage 去重配对，且只在最新一轮有新 usage 时学习。
+- `53f0365`、`c328414`、`c8746f6` 只改测试夹具、注释和忽略项；两个 merge 提交没有独立改动。
+
 ## 已知事项
 
 - `compressionModelId` 填 `provider/id`。裸 id 在多个 provider 下重名时判为歧义。
