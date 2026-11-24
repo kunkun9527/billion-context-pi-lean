@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- feat: `compress.claudeFoldAnchor: "tool-output"` (also in the `/acp-config` panel) lets the Claude fold anchor mark the tool output right before the earliest compressible range (item-level `cache_control` on `function_call_output`). The default anchor skips tool outputs and falls back to the last earlier text part; in agent loops that is often the first user message, which the proxy already caches, so it saves little. Opt-in because it needs CLIProxyAPI >= 8.1.1, which forwards the marker onto the Claude `tool_result` ([router-for-me/CLIProxyAPI#7782](https://github.com/router-for-me/CLIProxyAPI/issues/7782)); older versions drop it, and other endpoints may not accept it. Wire test (Haiku 5.5, CLIProxyAPI 8.1.2, ~80K prefix ending in a tool output, suffix replaced as a fold would): cached tokens on the request after the fold 79,740 with `"tool-output"`, 515 with the default anchor, 518 with none. `scripts/replay/post-fold-cache.mjs` compares the first request after each fold before/after a given time.
+
 ## v0.4.2 (2026-11-21)
 
 - fix: growth nudges fire again when the provider reading and the local estimate are close. The meter re-anchored its growth baseline every time the larger of the two flipped, and near-tied readings flip back and forth turn to turn, so growth never reached the nudge floor and the first nudge waited for the 75%/95% pressure bands. A switch now needs one reading to lead the other by more than max(1000 tokens, 10% of the larger); inside that band the current one stays. Ported from upstream billion-context-pi #598 (`27363db`). The `scale-flip-reanchor` log line now carries `hostFloor` and `sentTokens`.

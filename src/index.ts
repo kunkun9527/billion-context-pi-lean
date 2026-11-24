@@ -27,7 +27,7 @@ import { liveOnlyTailCached } from "./live-only-tail.js";
 import { prepareHistoryForSend, finalizeOutboundMessages } from "./outbound.js";
 import { buildAcpSystemPrompt } from "./system-prompt.js";
 import { applyStripImages } from "./strip-images.js";
-import { applyFoldAnchor, claudeFoldAnchorApplies, earliestRef } from "./fold-anchor.js";
+import { applyFoldAnchor, claudeFoldAnchorMode, earliestRef, type FoldAnchorMode } from "./fold-anchor.js";
 
 // compress.claudeFoldAnchor: earliest viable compressible start ref
 // per session, recorded by the context transform for the next provider request.
@@ -43,9 +43,9 @@ function forgetFoldAnchor(sid: string): void {
   foldAnchorLogged.delete(sid);
 }
 
-function claudeFoldAnchorOn(runtime: AcpRuntime, ctx: ExtensionContext): boolean {
+function claudeFoldAnchorOn(runtime: AcpRuntime, ctx: ExtensionContext): FoldAnchorMode | undefined {
   const m = ctx.model as { provider?: string; id?: string; api?: string } | undefined;
-  return claudeFoldAnchorApplies(resolveCompress(runtime.adapter.compress, m?.provider, m?.id).claudeFoldAnchor, m);
+  return claudeFoldAnchorMode(resolveCompress(runtime.adapter.compress, m?.provider, m?.id).claudeFoldAnchor, m);
 }
 import { wireToolGuardrails } from "./tool-guardrails.js";
 import { wireIdleCompact, type IdleCompactHandle } from "./idle-compact.js";
@@ -255,9 +255,10 @@ function wireBeforeProviderRequest(pi: ExtensionAPI, runtime: AcpRuntime, standD
         body = outcome.body;
       }
     }
-    if (claudeFoldAnchorOn(runtime, ctx)) {
+    const anchorMode = claudeFoldAnchorOn(runtime, ctx);
+    if (anchorMode) {
       const startRef = foldAnchorStart.get(sid);
-      const anchor = applyFoldAnchor(body ?? event.payload, startRef);
+      const anchor = applyFoldAnchor(body ?? event.payload, startRef, anchorMode);
       const outcome = { sid, startRef: startRef ?? null, index: anchor.index ?? null, reason: anchor.reason ?? "marked" };
       const key = JSON.stringify(outcome);
       if (foldAnchorLogged.get(sid) !== key) {

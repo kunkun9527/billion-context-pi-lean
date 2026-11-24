@@ -19,6 +19,7 @@ export interface PanelScope {
 
 const ON = "on";
 const OFF = "off";
+const TOOL_OUTPUT = "tool-output";
 const INHERIT = "inherit";
 const MAIN_MODEL = "main model";
 
@@ -155,11 +156,14 @@ export const PANEL_ITEMS: PanelItem[] = [
   {
     id: "claudeFoldAnchor",
     label: "Claude fold anchor",
-    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
-    values: () => [ON, OFF],
-    read: (a) => (a.compress?.claudeFoldAnchor === false ? OFF : ON),
+    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. tool-output also marks a tool output there (needs CLIProxyAPI 8.1.1+; other endpoints may not accept it). Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
+    values: () => [ON, TOOL_OUTPUT, OFF],
+    read: (a) => {
+      const v = a.compress?.claudeFoldAnchor;
+      return v === false ? OFF : v === TOOL_OUTPUT ? TOOL_OUTPUT : ON;
+    },
     write(raw, value) {
-      if (value === OFF) obj(raw, "compress").claudeFoldAnchor = false;
+      if (value === OFF || value === TOOL_OUTPUT) obj(raw, "compress").claudeFoldAnchor = value === OFF ? false : TOOL_OUTPUT;
       else {
         delete obj(raw, "compress").claudeFoldAnchor;
         prune(raw, ["compress"]);

@@ -3,9 +3,13 @@
 // compressible range, so everything before it survives that fold unchanged.
 // CLIProxyAPI only places breakpoints on the system prompt and the latest
 // message, so that stable prefix is rewritten after every fold. Marking the
-// last text part before the range lets Claude cache it. CLIProxyAPI forwards
-// part-level `cache_control` on input_text/output_text parts (but not on
-// function_call / function_call_output items), hence "last text part".
+// last item before the range lets Claude cache it: by default its last
+// input_text/output_text part, skipping items without one (function_call,
+// function_call_output). With `claudeFoldAnchor: "tool-output"` a
+// function_call_output gets an item-level `cache_control` instead of being
+// skipped. CLIProxyAPI >= 8.1.1 hoists it onto the Claude tool_result
+// (router-for-me/CLIProxyAPI#7782); older versions drop it, and other endpoints
+// may not accept it, so it is opt-in.
 // When no range remains (right after the last fold) src/index.ts keeps the
 // previous start: the prefix before it is unchanged and already cached.
 
@@ -14,10 +18,16 @@
 // must not count, so only a trailing tag is a real ref.
 const TRAILING_REF_TAG = /<acp\b[^>]*>m(\d{5,})<\/acp>\s*$/;
 
-/** The anchor applies only when enabled in config AND the live model is a
- *  Claude model on a `*responses` API (the wire format handled here). */
-export function claudeFoldAnchorApplies(enabled: boolean | undefined, model: { api?: string; id?: string } | undefined): boolean {
-  return enabled !== false && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "");
+export type FoldAnchorSetting = boolean | "tool-output";
+export type FoldAnchorMode = "text" | "tool-output";
+
+/** Anchor mode, or undefined when off: the anchor applies only when not
+ *  disabled in config AND the live model is a Claude model on a `*responses`
+ *  API (the wire format handled here). Any value other than false or
+ *  "tool-output" means the default text-part anchor. */
+export function claudeFoldAnchorMode(setting: FoldAnchorSetting | undefined, model: { api?: string; id?: string } | undefined): FoldAnchorMode | undefined {
+  if (setting === false || !/responses$/.test(model?.api ?? "") || !/claude/i.test(model?.id ?? "")) return undefined;
+  return setting === "tool-output" ? "tool-output" : "text";
 }
 
 function refNumber(ref: string): number | undefined {
@@ -77,6 +87,13 @@ function lastTextPart(item: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
+/** Item to mark at index i: its last text part; in "tool-output" mode a tool
+ *  output itself. */
+function anchorTarget(item: unknown, mode: FoldAnchorMode): Record<string, unknown> | undefined {
+  if (mode === "tool-output" && (item as { type?: unknown } | undefined)?.type === "function_call_output") return item as Record<string, unknown>;
+  return lastTextPart(item);
+}
+
 export interface FoldAnchorOutcome {
   body?: unknown;
   /** Index of the anchored input item, when one was marked. */
@@ -84,13 +101,13 @@ export interface FoldAnchorOutcome {
   reason?: string;
 }
 
-/** Mark the last text part that precedes `startRef` (the earliest compressible
+/** Mark the last text part (or, in "tool-output" mode, tool output) that precedes `startRef` (the earliest compressible
  *  message, or the previous one when none remains; it may already be folded
  *  away — the scan compares ref numbers, so it need not appear in the body).
  *  Conservative: the anchor sits at or before the last tagged item
  *  whose ref is below `startRef`, so untagged assistant items belonging to the
  *  range can never be anchored. Pure: returns a shallow-copied body. */
-export function applyFoldAnchor(body: unknown, startRef: string | undefined): FoldAnchorOutcome {
+export function applyFoldAnchor(body: unknown, startRef: string | undefined, mode: FoldAnchorMode = "text"): FoldAnchorOutcome {
   const start = startRef ? refNumber(startRef) : undefined;
   if (start === undefined) return { reason: "no-range" };
   const input = (body as { input?: unknown } | undefined)?.input;
@@ -105,13 +122,17 @@ export function applyFoldAnchor(body: unknown, startRef: string | undefined): Fo
   if (boundary < 0) return { reason: "no-boundary" };
 
   for (let i = boundary; i >= 0; i--) {
-    const part = lastTextPart(input[i]);
-    if (!part) continue;
-    if (part.cache_control) return { reason: "already-marked", index: i };
-    const item = input[i] as { content: unknown[] };
-    const content = item.content.map((p) => (p === part ? { ...part, cache_control: { type: "ephemeral" } } : p));
+    const target = anchorTarget(input[i], mode);
+    if (!target) continue;
+    if (target.cache_control) return { reason: "already-marked", index: i };
+    const marked = { ...target, cache_control: { type: "ephemeral" } };
     const nextInput = [...input];
-    nextInput[i] = { ...item, content };
+    if (target === input[i]) {
+      nextInput[i] = marked;
+    } else {
+      const item = input[i] as { content: unknown[] };
+      nextInput[i] = { ...item, content: item.content.map((p) => (p === target ? marked : p)) };
+    }
     return { body: { ...(body as object), input: nextInput }, index: i };
   }
   return { reason: "no-text-part" };

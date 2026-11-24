@@ -156,7 +156,7 @@
 | `compress.reasoning` | object | `{ "drop": true, "threshold": 2048 }` | 🟢 ACTIVE | 请求时丢弃历史 `compress` 调用上的超大思考（不修改持久化历史）。 |
 | `compress.stripImages` | boolean | `false` | 🟢 ACTIVE | **可选开启**：wire 层剥离历史图像载荷。为 `true` 时，除最近 `stripImagesKeepRecent` 条消息外，历史消息的图像部分在上游请求体中被剥离；纯图像消息折叠为 `"[image]"` 文本占位符。支持协议：anthropic-messages、openai-completions、openai-responses（含 azure/codex 变体）。 |
 | `compress.stripImagesKeepRecent` | number | `5` | 🟢 ACTIVE | `stripImages` 开启时保留图像载荷的最近消息条数。 |
-| `compress.claudeFoldAnchor` | boolean | `true` | 🟢 ACTIVE | **默认开启，仅对 Claude 生效**。未设为 `false` 时，若当前模型是走 `*responses` API 的 Claude 模型（模型 id 含 `claude`），会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control: {type: "ephemeral"}`，让下次折叠后仍不变的前缀继续命中 prompt cache。其他模型和 API 忽略此项。和其他 `compress` 字段一样，可以按 provider 或 model 单独设置；`/acp-config` 面板里的 Claude fold anchor 设置的是全局值。 |
+| `compress.claudeFoldAnchor` | boolean \| `"tool-output"` | `true` | 🟢 ACTIVE | **默认开启，仅对 Claude 生效**。未设为 `false` 时，若当前模型是走 `*responses` API 的 Claude 模型（模型 id 含 `claude`），会在最早一个可压缩范围之前的最后一个文本 part 上加 `cache_control: {type: "ephemeral"}`，让下次折叠后仍不变的前缀继续命中 prompt cache。默认跳过工具输出（`function_call_output`），所以在 agent 循环里锚点常常落在代理本来就会缓存的早期消息上。设为 `"tool-output"` 时，直接在范围前的那条工具输出上加 item 级 `cache_control`。这需要 CLIProxyAPI 8.1.1 及以上，它会把标记转到 Claude 的 `tool_result` 上；旧版本会丢掉标记，其他端点不一定支持，所以只在确认端点支持时开启。其他模型和 API 忽略此项。和其他 `compress` 字段一样，可以按 provider 或 model 单独设置；`/acp-config` 面板里的 Claude fold anchor 设置的是全局值。 |
 
 **prompts 键**
 

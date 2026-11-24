@@ -41,6 +41,9 @@ test("Claude fold anchor is on by default; off writes compress.claudeFoldAnchor:
   applyPanelValue(bare, "claudeFoldAnchor", "on", scope);
   assert.deepEqual(bare, {}, "empty compress object pruned");
   assert.equal(readPanelValue({ compress: { claudeFoldAnchor: true } }, "claudeFoldAnchor", scope), "on");
+  applyPanelValue(raw, "claudeFoldAnchor", "tool-output", scope);
+  assert.deepEqual(raw.compress, { promptPack: "lean", claudeFoldAnchor: "tool-output" }, "tool outputs are opt-in");
+  assert.equal(readPanelValue({ compress: raw.compress }, "claudeFoldAnchor", scope), "tool-output");
 });
 
 test("inherit keeps sibling keys of other models and providers", () => {

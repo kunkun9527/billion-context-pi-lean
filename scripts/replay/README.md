@@ -10,7 +10,10 @@ node scripts/replay/quality.mjs                         # 质量代理
 node scripts/replay/sim.mjs                             # 基础场景 + 会话 bootstrap
 node scripts/replay/sim.mjs --scenarios                 # 敏感性场景
 node scripts/replay/sim.mjs --g 50,70,100 --set FOLD_FRAC=1 --set PRESSURE=349000
+node scripts/replay/post-fold-cache.mjs --split 2026-11-24T18:00:00Z   # 折叠后首个请求的缓存命中，按时间点前后对比
 ```
+
+`post-fold-cache.mjs` 独立于回放，直接读会话：只统计成功的 compress 调用之后的第一个请求，fork 复制的条目只算一次。参数：`--split`（必填，ISO 时间，比如升级代理或改锚点的时间）、`--days`（默认 14）、`--model`、`--sessions`。
 
 `extract.mjs` 的参数：`--sessions`（默认 `~/.pi/agent/sessions`）、`--since`、`--model`（默认 `claude-opus-5-5`）、`--min-share`（会话中该模型调用的占比下限，默认 0.8）、`--out`。`quality.mjs`/`sim.mjs` 用 `--traces` 指定数据文件。`traces.json` 含文件路径和用户消息片段，不要提交。
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyFoldAnchor, claudeFoldAnchorApplies, earliestRef } from "../src/fold-anchor.js";
+import { applyFoldAnchor, claudeFoldAnchorMode, earliestRef } from "../src/fold-anchor.js";
 import { resolveCompress } from "../src/config.js";
 import { createAcpExtension } from "../src/index.js";
 import { rm } from "node:fs/promises";
@@ -9,14 +9,15 @@ import { tmpPath } from "./tmp-path.js";
 // Claude cache anchor (compress.claudeFoldAnchor): the anchor must sit
 // before the earliest compressible range, never inside it.
 
-test("claudeFoldAnchor applies by default, only on Claude over a responses API", () => {
+test("claudeFoldAnchor applies by default (text parts), only on Claude over a responses API", () => {
   const claude = { api: "cliproxyapi-codex-responses", id: "claude-opus-5-5" };
-  assert.equal(claudeFoldAnchorApplies(true, claude), true);
-  assert.equal(claudeFoldAnchorApplies(undefined, claude), true, "on by default");
-  assert.equal(claudeFoldAnchorApplies(undefined, { api: "cliproxyapi-codex-responses", id: "gpt-6-luna" }), false, "default never reaches other models");
-  assert.equal(claudeFoldAnchorApplies(false, claude), false);
-  assert.equal(claudeFoldAnchorApplies(true, { api: "cliproxyapi-codex-responses", id: "gpt-6-luna" }), false, "non-Claude model");
-  assert.equal(claudeFoldAnchorApplies(true, { api: "anthropic-messages", id: "claude-opus-5-5" }), false, "non-responses API");
+  assert.equal(claudeFoldAnchorMode(true, claude), "text");
+  assert.equal(claudeFoldAnchorMode(undefined, claude), "text", "on by default, text parts only");
+  assert.equal(claudeFoldAnchorMode("tool-output", claude), "tool-output", "tool outputs only when opted in");
+  assert.equal(claudeFoldAnchorMode(undefined, { api: "cliproxyapi-codex-responses", id: "gpt-6-luna" }), undefined, "default never reaches other models");
+  assert.equal(claudeFoldAnchorMode(false, claude), undefined);
+  assert.equal(claudeFoldAnchorMode("tool-output", { api: "cliproxyapi-codex-responses", id: "gpt-6-luna" }), undefined, "non-Claude model");
+  assert.equal(claudeFoldAnchorMode("tool-output", { api: "anthropic-messages", id: "claude-opus-5-5" }), undefined, "non-responses API");
 });
 
 test("claudeFoldAnchor resolves global → provider → model, deepest defined value wins", () => {
@@ -50,13 +51,34 @@ function body() {
 
 const marked = (b: unknown, i: number) => JSON.stringify((b as ReturnType<typeof body>).input[i]).includes("cache_control");
 
-test("anchors the last text part before the range, not the untagged assistant inside it", () => {
+test("by default skips tool outputs and anchors the last earlier text part", () => {
   const src = body();
   const out = applyFoldAnchor(src, "m00004");
-  assert.equal(out.index, 2);
-  assert.ok(marked(out.body, 2));
+  assert.equal(out.index, 2, "text part of a1, not the tool output: endpoints that never opted in see no item-level marker");
+  assert.ok(!marked(out.body, 4), "tool output untouched");
+  assert.deepEqual(((out.body as ReturnType<typeof body>).input[2] as { content: Array<Record<string, unknown>> }).content[0].cache_control, { type: "ephemeral" });
+});
+
+test("tool-output mode anchors the tool output right before the range, not the untagged assistant inside it", () => {
+  const src = body();
+  const out = applyFoldAnchor(src, "m00004", "tool-output");
+  assert.equal(out.index, 4);
+  const item = (out.body as ReturnType<typeof body>).input[4] as Record<string, unknown>;
+  assert.deepEqual(item.cache_control, { type: "ephemeral" }, "item-level marker, hoisted by CLIProxyAPI >= 8.1.1");
+  assert.equal(item.output, src.input[4] && (src.input[4] as { output: string }).output, "output untouched");
+  assert.ok(!marked(out.body, 2), "no earlier fallback marker");
   assert.ok(!marked(out.body, 5));
-  assert.ok(!marked(src, 2), "input body must not be mutated");
+  assert.ok(!marked(src, 4), "input body must not be mutated");
+});
+
+test("anchors the last text part when the boundary is a message", () => {
+  const src = body();
+  src.input.splice(3, 2); // no tool output before the range
+  src.input.splice(2, 0, user("q2" + tag("m00002")) as any);
+  const out = applyFoldAnchor(src, "m00004");
+  assert.equal(out.index, 2, "the tagged user item, never the untagged assistant after it");
+  const part = ((out.body as ReturnType<typeof body>).input[2] as { content: Array<Record<string, unknown>> }).content[0];
+  assert.deepEqual(part.cache_control, { type: "ephemeral" });
 });
 
 test("skips when there is no range or no tagged item before it", () => {
@@ -69,16 +91,18 @@ test("a ref tag quoted mid-text does not count as the item's ref", () => {
   const src = body();
   // An untagged assistant inside the range quoting an old tag must not become the boundary.
   src.input[5] = assistant(`see ${tag("m00002").trim()} above`);
-  const out = applyFoldAnchor(src, "m00004");
-  assert.equal(out.index, 2);
+  const out = applyFoldAnchor(src, "m00004", "tool-output");
+  assert.equal(out.index, 4, "item 5 is not the boundary");
 });
 
 test("leaves an already-marked anchor unchanged", () => {
   const src = body();
-  (src.input[2].content as Array<Record<string, unknown>>)[0].cache_control = { type: "ephemeral" };
-  const out = applyFoldAnchor(src, "m00004");
+  (src.input[1].content as Array<Record<string, unknown>>)[0].cache_control = { type: "ephemeral" };
+  const out = applyFoldAnchor(src, "m00003");
   assert.equal(out.reason, "already-marked");
   assert.equal(out.body, undefined);
+  (src.input[4] as Record<string, unknown>).cache_control = { type: "ephemeral" };
+  assert.equal(applyFoldAnchor(src, "m00004", "tool-output").reason, "already-marked", "tool output marked already");
 });
 
 test("a start ref already folded out of the payload still anchors before where it was", () => {

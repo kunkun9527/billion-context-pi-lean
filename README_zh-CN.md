@@ -110,7 +110,7 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 | Context threshold（上下文阈值） | 上下文占到模型窗口的这个比例以上，压缩提醒不再等 Nudge interval：只要能腾出的空间达到 Minimum benefit 就提醒。调低让上下文常保小；调高允许它更满。它不是硬上限。 | 75% |
 | Nudge interval（提醒间隔） | 上下文没到 Context threshold 时，要等可压缩的旧内容攒到大约这么多 token 才提醒一次。调大：提醒少，每次压得多；调小：频繁小压缩，上下文更精简。 | 50K |
 | Minimum benefit（最小收益） | 能腾出的空间少于这个值时不提醒，也不做空闲压缩：只为几千 token 去重写、打断缓存不划算。 | 5K 与窗口 1% 中较大者 |
-| Claude fold anchor（Claude 折叠锚点） | 只对走 `*responses` API 的 Claude 模型生效：额外给下次压缩不会动到的那部分历史加缓存标记，折叠后它仍留在提示缓存里。其他模型忽略。保存为 `compress.claudeFoldAnchor`。 | `on` |
+| Claude fold anchor（Claude 折叠锚点） | 只对走 `*responses` API 的 Claude 模型生效：额外给下次压缩不会动到的那部分历史加缓存标记，折叠后它仍留在提示缓存里。选 `tool-output` 时也会标工具输出（需要 CLIProxyAPI 8.1.1 及以上，其他端点不一定支持）。其他模型忽略。保存为 `compress.claudeFoldAnchor`。 | `on` |
 | Debug log（调试日志） | 在 `~/.pi/acp.log` 里额外记录详细事件，排查问题用。错误和主要事件始终会记。 | `off` |
 
 Context threshold、Nudge interval、Minimum benefit 跟模型的窗口和价格有关，所以面板只为**当前模型**设置它们；要改别的模型，先切换过去。选 `inherit`（继承）会去掉这个模型自己的值，改用 `acp.json` 里 provider 级或全局的值，都没有就用默认值。

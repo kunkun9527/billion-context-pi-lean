@@ -21532,8 +21532,9 @@ function applyStripImages(body, api, settings2) {
 
 // src/fold-anchor.ts
 var TRAILING_REF_TAG2 = /<acp\b[^>]*>m(\d{5,})<\/acp>\s*$/;
-function claudeFoldAnchorApplies(enabled, model) {
-  return enabled !== false && /responses$/.test(model?.api ?? "") && /claude/i.test(model?.id ?? "");
+function claudeFoldAnchorMode(setting, model) {
+  if (setting === false || !/responses$/.test(model?.api ?? "") || !/claude/i.test(model?.id ?? "")) return void 0;
+  return setting === "tool-output" ? "tool-output" : "text";
 }
 function refNumber(ref) {
   const m2 = /^m(\d+)$/.exec(ref);
@@ -21586,7 +21587,11 @@ function lastTextPart(item) {
   }
   return void 0;
 }
-function applyFoldAnchor(body, startRef) {
+function anchorTarget(item, mode) {
+  if (mode === "tool-output" && item?.type === "function_call_output") return item;
+  return lastTextPart(item);
+}
+function applyFoldAnchor(body, startRef, mode = "text") {
   const start = startRef ? refNumber(startRef) : void 0;
   if (start === void 0) return { reason: "no-range" };
   const input = body?.input;
@@ -21599,13 +21604,17 @@ function applyFoldAnchor(body, startRef) {
   }
   if (boundary < 0) return { reason: "no-boundary" };
   for (let i = boundary; i >= 0; i--) {
-    const part = lastTextPart(input[i]);
-    if (!part) continue;
-    if (part.cache_control) return { reason: "already-marked", index: i };
-    const item = input[i];
-    const content = item.content.map((p) => p === part ? { ...part, cache_control: { type: "ephemeral" } } : p);
+    const target = anchorTarget(input[i], mode);
+    if (!target) continue;
+    if (target.cache_control) return { reason: "already-marked", index: i };
+    const marked = { ...target, cache_control: { type: "ephemeral" } };
     const nextInput = [...input];
-    nextInput[i] = { ...item, content };
+    if (target === input[i]) {
+      nextInput[i] = marked;
+    } else {
+      const item = input[i];
+      nextInput[i] = { ...item, content: item.content.map((p) => p === target ? marked : p) };
+    }
     return { body: { ...body, input: nextInput }, index: i };
   }
   return { reason: "no-text-part" };
@@ -21922,6 +21931,7 @@ function wireIdleCompact(pi, runtime) {
 import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 var ON = "on";
 var OFF = "off";
+var TOOL_OUTPUT = "tool-output";
 var INHERIT = "inherit";
 var MAIN_MODEL = "main model";
 var k = (n) => n % 1e3 === 0 ? `${n / 1e3}K` : String(n);
@@ -22022,11 +22032,14 @@ var PANEL_ITEMS = [
   {
     id: "claudeFoldAnchor",
     label: "Claude fold anchor",
-    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
-    values: () => [ON, OFF],
-    read: (a) => a.compress?.claudeFoldAnchor === false ? OFF : ON,
+    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. tool-output also marks a tool output there (needs CLIProxyAPI 8.1.1+; other endpoints may not accept it). Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
+    values: () => [ON, TOOL_OUTPUT, OFF],
+    read: (a) => {
+      const v2 = a.compress?.claudeFoldAnchor;
+      return v2 === false ? OFF : v2 === TOOL_OUTPUT ? TOOL_OUTPUT : ON;
+    },
     write(raw, value) {
-      if (value === OFF) obj(raw, "compress").claudeFoldAnchor = false;
+      if (value === OFF || value === TOOL_OUTPUT) obj(raw, "compress").claudeFoldAnchor = value === OFF ? false : TOOL_OUTPUT;
       else {
         delete obj(raw, "compress").claudeFoldAnchor;
         prune2(raw, ["compress"]);
@@ -22197,7 +22210,7 @@ function forgetFoldAnchor(sid) {
 }
 function claudeFoldAnchorOn(runtime, ctx) {
   const m2 = ctx.model;
-  return claudeFoldAnchorApplies(resolveCompress(runtime.adapter.compress, m2?.provider, m2?.id).claudeFoldAnchor, m2);
+  return claudeFoldAnchorMode(resolveCompress(runtime.adapter.compress, m2?.provider, m2?.id).claudeFoldAnchor, m2);
 }
 function createAcpExtension(adapter = {}) {
   return (pi) => {
@@ -22328,9 +22341,10 @@ function wireBeforeProviderRequest(pi, runtime, standDownIfProxied) {
         body = outcome.body;
       }
     }
-    if (claudeFoldAnchorOn(runtime, ctx)) {
+    const anchorMode = claudeFoldAnchorOn(runtime, ctx);
+    if (anchorMode) {
       const startRef = foldAnchorStart.get(sid);
-      const anchor = applyFoldAnchor(body ?? event.payload, startRef);
+      const anchor = applyFoldAnchor(body ?? event.payload, startRef, anchorMode);
       const outcome = { sid, startRef: startRef ?? null, index: anchor.index ?? null, reason: anchor.reason ?? "marked" };
       const key = JSON.stringify(outcome);
       if (foldAnchorLogged.get(sid) !== key) {
