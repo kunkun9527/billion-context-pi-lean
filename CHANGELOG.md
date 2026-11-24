@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- fix: Google thinking models used as `compressionModelId` (`google-generative-ai` / `google-vertex`, `reasoning: true`) now think at their lowest level for summaries, so thinking is much less likely to use up the summary output budget (#6). Gemini counts thoughts toward `maxOutputTokens`, and the summary call sent no thinking setting, so Gemini thought at its dynamic default; on large ranges the summary was cut at 6667 tokens (`hit its output limit`) and the range was not folded. These calls now go through Pi's `streamSimple` with `reasoning: "minimal"`, the model's lowest supported level (Gemini 2.5 Pro cannot turn thinking off). Session mode with a shared prefix and other providers keep the previous request. The output budget is unchanged; a summary that still hits it leaves the range unfolded as before.
+
 ## v0.4.2 (2026-11-21)
 
 - fix: growth nudges fire again when the provider reading and the local estimate are close. The meter re-anchored its growth baseline every time the larger of the two flipped, and near-tied readings flip back and forth turn to turn, so growth never reached the nudge floor and the first nudge waited for the 75%/95% pressure bands. A switch now needs one reading to lead the other by more than max(1000 tokens, 10% of the larger); inside that band the current one stays. Ported from upstream billion-context-pi #598 (`27363db`). The `scale-flip-reanchor` log line now carries `hostFloor` and `sentTokens`.

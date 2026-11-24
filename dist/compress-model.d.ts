@@ -18,6 +18,15 @@ export interface ResolveResult {
     ambiguous: CompressionModelInfo[];
 }
 type ModelRegistryLike = ExtensionContext["modelRegistry"];
+/** Nested-call method on the host registry: `streamSimple` for Google
+ *  thinking models on the extracted-content path, `complete` otherwise.
+ *  Gemini counts thoughts toward maxOutputTokens, and `complete()` sends no
+ *  thinkingConfig, so Gemini thinks at its dynamic default and can use up the
+ *  summary budget (#6). `streamSimple` with `reasoning: "minimal"` lets Pi pick
+ *  the model's lowest level (2.5 Pro cannot turn thinking off, so "off" would
+ *  be rejected there). A shared session prefix keeps `complete()`: changing
+ *  thinking settings can cost the prompt-cache hit that path exists for. */
+export declare function summaryCallMethod(model: Model<Api>, sharedPrefix: boolean): "complete" | "streamSimple";
 /** Every chat model Pi knows, including providers registered by extensions
  *  (the session's live registry — not a private models.json-only runtime). */
 export declare function listModels(registry: ModelRegistryLike): CompressionModelInfo[];
@@ -27,7 +36,7 @@ export declare function resolveModel(registry: ModelRegistryLike, ref: string): 
  *  auth, extension-registered providers). Throws on host without nested
  *  completion support, API error, abort, or empty output — the caller then
  *  keeps the main model's fallback summary. */
-export declare function summarizeWithModel(ctx: ExtensionContext, model: Model<Api>, context: Context, maxTokens: number, signal?: AbortSignal): Promise<string>;
+export declare function summarizeWithModel(ctx: ExtensionContext, model: Model<Api>, context: Context, maxTokens: number, signal?: AbortSignal, method?: "complete" | "streamSimple"): Promise<string>;
 /** The leaked text (trimmed) when the opening of `summary` is planning, else null. */
 export declare function detectPlanningLeak(summary: string): string | null;
 /** The echoed text when `summary` contains copied transcript entries, else null. */
@@ -37,7 +46,7 @@ export type SummaryDefect = "planning" | "transcript-echo";
  *  text or copies transcript entries. A second defective output throws, so
  *  the range is not folded (the caller retries later) — never stored, never
  *  silently stripped. */
-export declare function summarizeChecked(ctx: ExtensionContext, model: Model<Api>, context: Context, maxTokens: number, signal?: AbortSignal, onDefect?: (text: string, kind: SummaryDefect) => void): Promise<string>;
+export declare function summarizeChecked(ctx: ExtensionContext, model: Model<Api>, context: Context, maxTokens: number, signal?: AbortSignal, onDefect?: (text: string, kind: SummaryDefect) => void, method?: "complete" | "streamSimple"): Promise<string>;
 /** System prompt for a dedicated model: reuse the kernel's tier-1 rules so
  *  its output matches what the main model would produce. */
 export declare function buildSummarizeSystemPrompt(prompts: {

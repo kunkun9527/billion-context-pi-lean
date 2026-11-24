@@ -19,7 +19,7 @@ import { parseCompressArgs, resolveBoundaries, resolveBlockSpan, viableRanges, f
 import { countUnicodeEscapes, findUnverifiableUserQuote, sanitizeSummary } from "./summary-sanitize.js";
 import { assertNotAborted } from "./abort.js";
 import { PROXY_STAND_DOWN_MESSAGE } from "./proxy-detect.js";
-import { buildSummarizeSystemPrompt, fitToModel, resolveModel, summarizeChecked, SESSION_MODEL_REF, type ContentPart } from "./compress-model.js";
+import { buildSummarizeSystemPrompt, fitToModel, resolveModel, summarizeChecked, summaryCallMethod, SESSION_MODEL_REF, type ContentPart } from "./compress-model.js";
 
 function formatK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
@@ -790,19 +790,19 @@ async function writeDedicatedSummaries(input: DedicatedSummaryInput): Promise<De
     }
     model = resolved.model;
   }
-  // Setup failures (above, and a host without nested completion) are
-  // configuration problems, not per-call ones: keep folding with the caller's
-  // fallback and warn, rather than stop compressing altogether.
-  if (typeof (input.ctx.modelRegistry as unknown as { complete?: unknown }).complete !== "function") {
-    return { ranges, note: "host model registry has no complete() (needs pi >= 1.x); kept caller-provided fallback summaries", warn: true, failed: [] };
-  }
-
   let prefix: Message[] | null = null;
   if (isSession) {
     const captured = input.runtime.getLastSentMessages(sid);
     if (captured) {
       try { prefix = convertToLlm(captured); } catch { prefix = null; }
     }
+  }
+  // Setup failures (above, and a host without nested completion) are
+  // configuration problems, not per-call ones: keep folding with the caller's
+  // fallback and warn, rather than stop compressing altogether.
+  const method = summaryCallMethod(model, prefix !== null);
+  if (typeof (input.ctx.modelRegistry as unknown as Record<string, unknown>)[method] !== "function") {
+    return { ranges, note: `host model registry has no ${method}() (needs pi >= 1.x); kept caller-provided fallback summaries`, warn: true, failed: [] };
   }
   const sessionSystemPrompt = isSession ? (input.ctx.getSystemPrompt?.() ?? "") : "";
 
@@ -834,7 +834,7 @@ async function writeDedicatedSummaries(input: DedicatedSummaryInput): Promise<De
       }
       const span = `${range.startId}..${range.endId}`;
       range.summary = await summarizeChecked(input.ctx, model, context, maxTokens, input.signal, (text, kind) =>
-        logWarn("compress", { sid, event: kind === "planning" ? "summary-planning-leak" : "summary-transcript-echo", ref, span, text, action: "retry" }));
+        logWarn("compress", { sid, event: kind === "planning" ? "summary-planning-leak" : "summary-transcript-echo", ref, span, text, action: "retry" }), method);
       used += 1;
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

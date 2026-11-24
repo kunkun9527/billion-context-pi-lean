@@ -16,9 +16,10 @@
 
 ### 专用摘要模型（移植 PR #241 并改进）
 
-- 模型解析与调用走 `ctx.modelRegistry`（`find`/`getAll`/`complete`）。PR 原本用 `ModelRuntime.create(models.json)`，看不到由扩展注册的 provider。
-- `complete()` 只有 Pi >= 1.x 才有；宿主没有时抛错，回退到调用方提供的摘要。
-- 主模型提供 1–2 句有意义的回退摘要，不用裸占位符 `"compressed"`；它作为 `<caller_note>` 传给专用模型。专用模型对某个范围调用失败时，这个范围不折叠（否则短回退摘要会顶替详细摘要，refold 时还会顶替旧块摘要），同一次调用里成功的范围照常折叠；全部失败时工具报错，计入重试上限。只有模型解析不到、或宿主没有 `complete()` 这类配置问题，才用回退摘要折叠并警告。
+- 模型解析与调用走 `ctx.modelRegistry`（`find`/`getAll`/`complete`/`streamSimple`）。PR 原本用 `ModelRuntime.create(models.json)`，看不到由扩展注册的 provider。
+- `complete()` 和 `streamSimple()` 只有 Pi >= 1.x 才有；宿主缺少本次要用的那个方法时，回退到调用方提供的摘要并警告。
+- 调用方法由 `summaryCallMethod`（`src/compress-model.ts`）决定（#6）：抽取内容路径上的 Google 思考模型（`api` 为 `google-generative-ai` / `google-vertex` 且 `reasoning: true`）走 `streamSimple(..., { reasoning: "minimal" }).result()`，其余（包括 `session` 模式共享前缀）走 `complete()`。原因：Gemini 的思考 token 计入 `maxOutputTokens`，而 `complete()` 不发 `thinkingConfig`，Gemini 按默认动态思考，大范围时会把摘要预算耗尽。用 `minimal` 而不是不传 reasoning：不传时 Pi 会发 `thinkingBudget: 0`，2.5 Pro 不允许关闭思考；`minimal` 由 Pi 降到模型支持的最低档（2.5 Pro 为 128 budget，Gemini 3 Pro 为 low）。共享前缀不改，避免思考设置变化影响 prompt cache。其他 provider 在 `complete()` 下已基本不思考（OpenAI Responses 发 `none`），未改动。
+- 主模型提供 1–2 句有意义的回退摘要，不用裸占位符 `"compressed"`；它作为 `<caller_note>` 传给专用模型。专用模型对某个范围调用失败时，这个范围不折叠（否则短回退摘要会顶替详细摘要，refold 时还会顶替旧块摘要），同一次调用里成功的范围照常折叠；全部失败时工具报错，计入重试上限。只有模型解析不到、或宿主没有所需的 `complete()`/`streamSimple()` 这类配置问题，才用回退摘要折叠并警告。
 - 折叠结果记在 compress toolResult 的 `details.acpFolded`（不发给模型），按实际变化的块记录新增块和原位重折叠，不记录失败或重叠跳过的范围；跨块 refold 会更新多个旧块但保留它们各自的端点，不能再拿请求端点匹配结果。旧块按内核解析的消息跨度回放，避免原块用 b-ref 建立时误建新父块。sidecar 丢失后从会话日志重建时优先用它（`src/state-rebuild.ts`）。恢复同时按日志顺序回放成功的 inline block decompress 标记（原生工具及 Lean `acp_context` 包装调用），保证后续 refold 可重现；文件、消息 ref 恢复和失败结果不设置标记。旧日志若没有记录实际重折叠摘要，无法追溯补回缺失内容。外壳 `wrapCompress` 只改写 `content`，`details` 原样透传。
 - 专用模型输出再走一遍 `sanitizeSummary`；`signal` 透传，abort 时停止剩余 range。
 - 注册表模型模式：Nudge 里的 `howToCompressRules` 换成只讲选范围和回退摘要的短版本（`src/index.ts` 的 `nudgePrompts`）；`session` 模式保留完整规则，因为它的摘要调用复用主会话前缀。

@@ -27,6 +27,24 @@ type ModelRegistryLike = ExtensionContext["modelRegistry"];
 /** Pi >= 1.x exposes request-authenticated nested completions on the
  *  registry; 0.83 typings do not declare it, so it is probed at call time. */
 type RegistryComplete = (model: Model<Api>, context: Context, options?: { maxTokens?: number; signal?: AbortSignal }) => Promise<AssistantMessage>;
+type RegistryStreamSimple = (
+  model: Model<Api>,
+  context: Context,
+  options?: { maxTokens?: number; signal?: AbortSignal; reasoning?: "minimal" },
+) => { result(): Promise<AssistantMessage> };
+
+/** Nested-call method on the host registry: `streamSimple` for Google
+ *  thinking models on the extracted-content path, `complete` otherwise.
+ *  Gemini counts thoughts toward maxOutputTokens, and `complete()` sends no
+ *  thinkingConfig, so Gemini thinks at its dynamic default and can use up the
+ *  summary budget (#6). `streamSimple` with `reasoning: "minimal"` lets Pi pick
+ *  the model's lowest level (2.5 Pro cannot turn thinking off, so "off" would
+ *  be rejected there). A shared session prefix keeps `complete()`: changing
+ *  thinking settings can cost the prompt-cache hit that path exists for. */
+export function summaryCallMethod(model: Model<Api>, sharedPrefix: boolean): "complete" | "streamSimple" {
+  if (sharedPrefix || model.reasoning !== true) return "complete";
+  return model.api === "google-generative-ai" || model.api === "google-vertex" ? "streamSimple" : "complete";
+}
 
 /** Every chat model Pi knows, including providers registered by extensions
  *  (the session's live registry — not a private models.json-only runtime). */
@@ -58,10 +76,21 @@ export async function summarizeWithModel(
   context: Context,
   maxTokens: number,
   signal?: AbortSignal,
+  method: "complete" | "streamSimple" = "complete",
 ): Promise<string> {
-  const complete = (ctx.modelRegistry as unknown as { complete?: RegistryComplete }).complete;
-  if (typeof complete !== "function") throw new Error("host model registry has no complete() (needs pi >= 1.x)");
-  const msg = await complete.call(ctx.modelRegistry, model, context, { maxTokens, signal });
+  const registry = ctx.modelRegistry as unknown as { complete?: RegistryComplete; streamSimple?: RegistryStreamSimple };
+  let msg: AssistantMessage;
+  if (method === "streamSimple") {
+    const streamSimple = registry.streamSimple;
+    if (typeof streamSimple !== "function") throw new Error("host model registry has no streamSimple() (needs pi >= 1.x)");
+    // result() can resolve with an error/aborted message rather than reject;
+    // the stopReason checks below cover both paths.
+    msg = await streamSimple.call(registry, model, context, { maxTokens, signal, reasoning: "minimal" }).result();
+  } else {
+    const complete = registry.complete;
+    if (typeof complete !== "function") throw new Error("host model registry has no complete() (needs pi >= 1.x)");
+    msg = await complete.call(registry, model, context, { maxTokens, signal });
+  }
   if (msg.stopReason === "error" || msg.stopReason === "aborted") {
     throw new Error(msg.errorMessage ?? `compression model stopped: ${msg.stopReason}`);
   }
@@ -175,13 +204,14 @@ export async function summarizeChecked(
   maxTokens: number,
   signal?: AbortSignal,
   onDefect?: (text: string, kind: SummaryDefect) => void,
+  method: "complete" | "streamSimple" = "complete",
 ): Promise<string> {
-  const first = await summarizeWithModel(ctx, model, context, maxTokens, signal);
+  const first = await summarizeWithModel(ctx, model, context, maxTokens, signal, method);
   const defect = detectDefect(first);
   if (defect === null) return first;
   onDefect?.(defect.text, defect.kind);
   const retry: Context = { ...context, systemPrompt: `${context.systemPrompt ?? ""}\n\n${RETRY_NOTES[defect.kind]}` };
-  const second = await summarizeWithModel(ctx, model, retry, maxTokens, signal);
+  const second = await summarizeWithModel(ctx, model, retry, maxTokens, signal, method);
   const again = detectDefect(second);
   if (again !== null) {
     const what = again.kind === "planning" ? "planning notes into the summary" : "transcript entries into the summary";
