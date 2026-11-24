@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.4.3 (2026-11-24)
 
+- fix: Google thinking models used as `compressionModelId` (`google-generative-ai` / `google-vertex`, `reasoning: true`) now think at their lowest level for summaries, so thinking is much less likely to use up the summary output budget (#6). Gemini counts thoughts toward `maxOutputTokens`, and the summary call sent no thinking setting, so Gemini thought at its dynamic default; on large ranges the summary was cut at 6667 tokens (`hit its output limit`) and the range was not folded. These calls now go through Pi's `streamSimple` with `reasoning: "minimal"`, the model's lowest supported level (Gemini 2.5 Pro cannot turn thinking off). Session mode with a shared prefix and other providers keep the previous request. The output budget is unchanged; a summary that still hits it leaves the range unfolded as before.
 - feat: `compress.claudeFoldAnchor: "tool-output"` (also in the `/acp-config` panel) lets the Claude fold anchor mark the tool output right before the earliest compressible range (item-level `cache_control` on `function_call_output`). The default anchor skips tool outputs and falls back to the last earlier text part; in agent loops that is often the first user message, which the proxy already caches, so it saves little. Opt-in because it needs CLIProxyAPI >= 8.1.1, which forwards the marker onto the Claude `tool_result` ([router-for-me/CLIProxyAPI#7782](https://github.com/router-for-me/CLIProxyAPI/issues/7782)); older versions drop it, and other endpoints may not accept it. Wire test (Haiku 5.5, CLIProxyAPI 8.1.2, ~80K prefix ending in a tool output, suffix replaced as a fold would): cached tokens on the request after the fold 79,740 with `"tool-output"`, 515 with the default anchor, 518 with none. `scripts/replay/post-fold-cache.mjs` compares the first request after each fold before/after a given time.
 
 ## v0.4.2 (2026-11-21)

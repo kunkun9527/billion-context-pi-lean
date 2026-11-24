@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-33425RME.js";
+} from "./chunk-BLNIV4H4.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -17968,6 +17968,10 @@ function nativeStandDownMessage(host) {
 
 // src/compress-model.ts
 var SESSION_MODEL_REF = "session";
+function summaryCallMethod(model, sharedPrefix) {
+  if (sharedPrefix || model.reasoning !== true) return "complete";
+  return model.api === "google-generative-ai" || model.api === "google-vertex" ? "streamSimple" : "complete";
+}
 function listModels(registry3) {
   return registry3.getAll().map((m2) => ({ provider: m2.provider, id: m2.id, name: m2.name }));
 }
@@ -17983,10 +17987,18 @@ function resolveModel(registry3, ref) {
   if (matches.length === 1) return { model: matches[0], ambiguous: [] };
   return { model: null, ambiguous: matches.map((m2) => ({ provider: m2.provider, id: m2.id, name: m2.name })) };
 }
-async function summarizeWithModel(ctx, model, context, maxTokens, signal) {
-  const complete = ctx.modelRegistry.complete;
-  if (typeof complete !== "function") throw new Error("host model registry has no complete() (needs pi >= 1.x)");
-  const msg = await complete.call(ctx.modelRegistry, model, context, { maxTokens, signal });
+async function summarizeWithModel(ctx, model, context, maxTokens, signal, method = "complete") {
+  const registry3 = ctx.modelRegistry;
+  let msg;
+  if (method === "streamSimple") {
+    const streamSimple = registry3.streamSimple;
+    if (typeof streamSimple !== "function") throw new Error("host model registry has no streamSimple() (needs pi >= 1.x)");
+    msg = await streamSimple.call(registry3, model, context, { maxTokens, signal, reasoning: "minimal" }).result();
+  } else {
+    const complete = registry3.complete;
+    if (typeof complete !== "function") throw new Error("host model registry has no complete() (needs pi >= 1.x)");
+    msg = await complete.call(registry3, model, context, { maxTokens, signal });
+  }
   if (msg.stopReason === "error" || msg.stopReason === "aborted") {
     throw new Error(msg.errorMessage ?? `compression model stopped: ${msg.stopReason}`);
   }
@@ -18044,15 +18056,15 @@ var RETRY_NOTES = {
   planning: "IMPORTANT: your previous attempt began with notes to yourself about how to write the summary. That text would have been stored as part of the summary. Plan silently and output only the summary itself, starting directly with its first line.",
   "transcript-echo": "IMPORTANT: your previous attempt copied transcript entries (lines such as `[assistant:read call] \u2026` or the </content> tag) into the summary. Never reproduce the input: describe what happened in your own words, keep only the exact values the rules require, and stop after the state section."
 };
-async function summarizeChecked(ctx, model, context, maxTokens, signal, onDefect) {
-  const first = await summarizeWithModel(ctx, model, context, maxTokens, signal);
+async function summarizeChecked(ctx, model, context, maxTokens, signal, onDefect, method = "complete") {
+  const first = await summarizeWithModel(ctx, model, context, maxTokens, signal, method);
   const defect = detectDefect(first);
   if (defect === null) return first;
   onDefect?.(defect.text, defect.kind);
   const retry = { ...context, systemPrompt: `${context.systemPrompt ?? ""}
 
 ${RETRY_NOTES[defect.kind]}` };
-  const second = await summarizeWithModel(ctx, model, retry, maxTokens, signal);
+  const second = await summarizeWithModel(ctx, model, retry, maxTokens, signal, method);
   const again = detectDefect(second);
   if (again !== null) {
     const what = again.kind === "planning" ? "planning notes into the summary" : "transcript entries into the summary";
@@ -18696,9 +18708,6 @@ async function writeDedicatedSummaries(input) {
     }
     model = resolved.model;
   }
-  if (typeof input.ctx.modelRegistry.complete !== "function") {
-    return { ranges, note: "host model registry has no complete() (needs pi >= 1.x); kept caller-provided fallback summaries", warn: true, failed: [] };
-  }
   let prefix = null;
   if (isSession) {
     const captured = input.runtime.getLastSentMessages(sid);
@@ -18709,6 +18718,10 @@ async function writeDedicatedSummaries(input) {
         prefix = null;
       }
     }
+  }
+  const method = summaryCallMethod(model, prefix !== null);
+  if (typeof input.ctx.modelRegistry[method] !== "function") {
+    return { ranges, note: `host model registry has no ${method}() (needs pi >= 1.x); kept caller-provided fallback summaries`, warn: true, failed: [] };
   }
   const sessionSystemPrompt = isSession ? input.ctx.getSystemPrompt?.() ?? "" : "";
   const planned = prefix ? /* @__PURE__ */ new Map() : plannedFolds(input, ranges);
@@ -18736,7 +18749,7 @@ ${fitToModel(extracted, model, maxTokens)}
         };
       }
       const span = `${range.startId}..${range.endId}`;
-      range.summary = await summarizeChecked(input.ctx, model, context, maxTokens, input.signal, (text, kind) => logWarn("compress", { sid, event: kind === "planning" ? "summary-planning-leak" : "summary-transcript-echo", ref, span, text, action: "retry" }));
+      range.summary = await summarizeChecked(input.ctx, model, context, maxTokens, input.signal, (text, kind) => logWarn("compress", { sid, event: kind === "planning" ? "summary-planning-leak" : "summary-transcript-echo", ref, span, text, action: "retry" }), method);
       used += 1;
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -20195,7 +20208,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.4.2";
+    return "0.4.3";
   } catch {
     return "dev";
   }
@@ -21061,7 +21074,7 @@ async function statusReport(runtime, ctx) {
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m2) => m2.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
   const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
-  const versionStr = "0.4.2" ? `billion-context-pi@${"0.4.2"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const versionStr = "0.4.3" ? `billion-context-pi@${"0.4.3"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -22300,7 +22313,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     const sid = ctx.sessionManager.getSessionId();
     forgetFoldAnchor(sid);
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.2" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.3" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {

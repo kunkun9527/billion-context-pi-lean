@@ -6,7 +6,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createAcpExtension } from "../src/index.js";
-import { detectPlanningLeak, detectTranscriptEcho, fitToModel, resolveModel } from "../src/compress-model.js";
+import { detectPlanningLeak, detectTranscriptEcho, fitToModel, resolveModel, summaryCallMethod } from "../src/compress-model.js";
 
 function captureApi() {
   const handlers = new Map<string, ((event: any, ctx: any) => any)[]>();
@@ -34,22 +34,29 @@ function userMsg(id: string, text: string) {
   return { type: "message", id, parentId: null, timestamp: "", message: { role: "user", content: text, timestamp: Date.now() } };
 }
 
-type Call = { model: any; context: any; options: any };
+type Call = { model: any; context: any; options: any; method?: "complete" | "streamSimple" };
 
 function model(provider: string, id: string): any {
   return { provider, id, name: id, api: "openai-completions", contextWindow: 200_000, maxTokens: 8000 };
 }
 
-/** Registry fake: Pi >= 1.x shape (find/getAll/complete). */
+/** Registry fake: Pi >= 1.x shape (find/getAll/complete/streamSimple). */
 function fakeRegistry(models: any[], reply: (call: Call) => Promise<any>, calls: Call[]) {
   return {
     getAll: () => models,
     find: (provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id),
     complete: async (m: any, context: any, options: any) => {
-      const call = { model: m, context, options };
+      const call: Call = { model: m, context, options, method: "complete" };
       calls.push(call);
       return reply(call);
     },
+    streamSimple: (m: any, context: any, options: any) => ({
+      result: async () => {
+        const call: Call = { model: m, context, options, method: "streamSimple" };
+        calls.push(call);
+        return reply(call);
+      },
+    }),
   };
 }
 
@@ -402,6 +409,64 @@ test("Lean: error and length stops do not fold; a host without complete() still 
   const b = await setup("no-complete", oldHost, { acpJson: { compressionModelId: "cheap/summarizer" } });
   await b.run(FALLBACK);
   assert.ok((await readBlockSummaries(b.stateFile)).includes(FALLBACK));
+});
+
+test("#6: Google thinking models summarize via streamSimple at minimal reasoning; other paths keep complete()", async () => {
+  const gemini = { ...model("google", "gemini-2.5-pro"), api: "google-generative-ai", reasoning: true };
+  const vertex = { ...model("google-vertex", "gemini-3-pro"), api: "google-vertex", reasoning: true };
+  assert.equal(summaryCallMethod(gemini, false), "streamSimple");
+  assert.equal(summaryCallMethod(vertex, false), "streamSimple");
+  assert.equal(summaryCallMethod(gemini, true), "complete", "shared session prefix keeps its request shape");
+  assert.equal(summaryCallMethod({ ...gemini, reasoning: false }, false), "complete");
+  assert.equal(summaryCallMethod({ ...model("anthropic", "claude"), api: "anthropic-messages", reasoning: true }, false), "complete");
+
+  const calls: Call[] = [];
+  const a = await setup("gemini-extract", fakeRegistry([gemini], textReply(DEDICATED), calls), { acpJson: { compressionModelId: "google/gemini-2.5-pro" } });
+  assert.match(await a.run(FALLBACK), /summaries written by google\/gemini-2\.5-pro \(1\/1\)/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, "streamSimple");
+  assert.equal(calls[0]!.options.reasoning, "minimal");
+  assert.equal(calls[0]!.options.maxTokens, 6667, "output budget unchanged");
+  assert.ok((await readBlockSummaries(a.stateFile)).includes(DEDICATED));
+
+  // A length stop returned by result() still keeps the range unfolded.
+  const lenReg = fakeRegistry([gemini], async () => ({ role: "assistant", content: [{ type: "text", text: "DEDICATED-SUMMARY: cut" }], stopReason: "length" }), []);
+  const l = await setup("gemini-length", lenReg, { acpJson: { compressionModelId: "google/gemini-2.5-pro" } });
+  await assert.rejects(l.run(FALLBACK), /hit its output limit \(6667 tokens\)/);
+  assert.deepEqual(await readBlockSummaries(l.stateFile), []);
+
+  // result() resolving with error / aborted messages (not rejecting) keeps the range unfolded too.
+  for (const [name, stop, pattern] of [
+    ["gemini-error", { stopReason: "error", errorMessage: "429" }, /failed for every range \(m00001\.\.m00001: 429\)/],
+    ["gemini-aborted", { stopReason: "aborted" }, /compression model stopped: aborted/],
+  ] as const) {
+    const reg = fakeRegistry([gemini], async () => ({ role: "assistant", content: [], ...stop }), []);
+    const e = await setup(name, reg, { acpJson: { compressionModelId: "google/gemini-2.5-pro" } });
+    await assert.rejects(e.run(FALLBACK), pattern);
+    assert.deepEqual(await readBlockSummaries(e.stateFile), []);
+  }
+
+  // Narrow window: the same budget sizes the input truncation on this path.
+  const narrow = { ...gemini, contextWindow: 16_000 };
+  const narrowCalls: Call[] = [];
+  const w = await setup("gemini-narrow", fakeRegistry([narrow], textReply(DEDICATED), narrowCalls), { acpJson: { compressionModelId: "google/gemini-2.5-pro" } });
+  await w.run(FALLBACK);
+  assert.equal(narrowCalls[0]!.method, "streamSimple");
+  assert.equal(narrowCalls[0]!.options.maxTokens, 6667);
+  assert.ok(String(narrowCalls[0]!.context.messages[0]!.content).includes("[... truncated ...]"), "input fits the narrow window");
+
+  // A host with complete() but no streamSimple() falls back with a setup warning.
+  const { streamSimple: _drop, ...noStream } = fakeRegistry([gemini], textReply(DEDICATED), []);
+  const n = await setup("gemini-no-stream", noStream, { acpJson: { compressionModelId: "google/gemini-2.5-pro" } });
+  assert.match(await n.run(FALLBACK), /host model registry has no streamSimple\(\)/);
+  assert.ok((await readBlockSummaries(n.stateFile)).includes(FALLBACK));
+
+  // Session mode with a captured prefix keeps complete() for the same model.
+  const sessionCalls: Call[] = [];
+  const s = await setup("gemini-session", fakeRegistry([gemini], textReply(DEDICATED), sessionCalls), { acpJson: { compressionModelId: "session" }, sessionModel: gemini });
+  assert.match(await s.run(FALLBACK), /shared prefix/);
+  assert.equal(sessionCalls[0]!.method, "complete");
+  assert.equal(sessionCalls[0]!.options.reasoning, undefined);
 });
 
 test("compress: unresolvable model ref keeps the caller summary and warns", async () => {
