@@ -96,21 +96,25 @@ Compression nudges come on top of this and only when context fills up. With a de
 
 ## Configuration
 
-Type `/acp-config` in Pi to open the settings panel. Up/Down picks a setting, Enter or Space changes it, Esc closes. Changes apply at once, no restart needed.
+Type `/acp-config` in Pi to open the settings panel. Up/Down picks a setting; Left/Right steps through its choices back and forth (Enter or Space steps forward); Esc closes. On a number setting you can also just type a whole number: it is edited in place, Enter saves it, Esc cancels. The allowed range is shown under the description; on per-model settings, clear it and press Enter to inherit. Changes apply at once, no restart needed.
 
 ### Settings
 
-The panel lists these, most used first.
+The panel lists these, most used first. Under the selected setting it shows what it does and, on its own line, its default.
 
 | Setting | What it does | Default |
 |---|---|---|
 | Summary model | Who writes the summaries. `main model`: the main model writes them itself. `session`: the current model, in a separate call that reuses its cached prefix. Or pick any model Pi can use (Enter opens the list; type to filter), e.g. a cheap one. If that model's call fails, the range stays uncompressed and is tried again next time. | `main model` |
 | Idle compact | Compress once while you are away, before the prompt cache expires ([how it works](#idle-compact)). | `off` |
 | Idle minutes | How long the session must be idle first. Keep it a little under your models' cache lifetime: 29 fits a 30-minute cache. | 29 |
-| Context threshold | Share of the model's window above which the compress nudge no longer waits for Nudge interval and appears whenever Minimum benefit could be reclaimed. Lower keeps the context small; higher lets it run fuller. Not a hard cap. | 75% |
-| Nudge interval | Below Context threshold, the nudge waits until about this many tokens of old, compressible content have piled up. Bigger: fewer nudges, more folded at once. Smaller: frequent small compressions, a leaner context. | 50K |
-| Minimum benefit | No nudge, and no idle compact, when less than this could be reclaimed: rewriting a few thousand tokens is not worth breaking the cache. | larger of 5K and 1% of the window |
-| Claude fold anchor | Claude models on a `*responses` API only: also cache-marks the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. `tool-output` also marks tool outputs there (CLIProxyAPI 8.1.1+; other endpoints may not accept it). Ignored for other models. Saved as `compress.claudeFoldAnchor`. | `on` |
+| Context threshold | When the context grows past this share of the window, the model is reminded to compress more often: whenever at least Minimum benefit could be freed, instead of waiting for Nudge interval. Lower keeps the context small; higher lets it run fuller. Not a hard cap: the context can still grow beyond it. | 75% |
+| Emergency threshold | Last-resort safety net. Once the context reaches this share of the window, older big tool outputs and long messages are cut down to their beginning and end, with no summary, so the session does not overflow. The newest messages (as many as Recent messages) are left alone. If you set it below Context threshold, Context threshold drops to match, so compress reminders start no later than truncation; when the two are equal, both happen on the same turn. | 95% |
+| Nudge interval | Until Context threshold is reached, the model is reminded to compress only after about this many tokens of old content have piled up. Bigger: fewer reminders, more folded each time. Smaller: frequent small compressions, a leaner context. | 50K |
+| Minimum benefit | No reminder to compress, and no idle compact, when less than this could be freed: saving a few thousand tokens isn't worth breaking the cache. | larger of 5K and 1% of the window |
+| Recent messages | How many of the newest messages compress must leave alone. Each tool call and each result counts as one. `read` and `bash` output is not counted and can be folded right away, because it is easy to get again (Protect recent reads keeps reads). Unless this is 0, your latest message is kept too. Emergency truncation also spares this many newest messages, counting everything. | 5 |
+| Recent tokens | Compress also leaves alone the newest messages, up to about this many tokens. Whichever of this and Recent messages covers more applies. Skips the same tools as Recent messages. 0 turns it off. Emergency truncation ignores it. | 5K |
+| Protect recent reads | Off: a file the model just read can be folded right away, like `bash` output. On: recent read results are kept like other tools' results, so the recent zone gets a bit bigger. Turn on if the model keeps re-reading the same file. Stored as `"read"` in `preserveRecentTools`. | `off` |
+| Claude fold anchor | Claude models through a `*responses` API only. Keeps the prompt cache alive after a compress: the part of the history that compress won't touch gets a cache mark, so the next request doesn't pay full price for it again. `tool-output` may also put the mark on a tool output, which usually keeps more cached (needs CLIProxyAPI 8.1.1+; other endpoints may reject it). Other models ignore this. Saved as `compress.claudeFoldAnchor`. | `on` |
 | Debug log | Writes detailed events to `~/.pi/acp.log` for troubleshooting. Errors and the main events are always logged. | `off` |
 
 Context threshold, Nudge interval and Minimum benefit depend on the model's window and price, so the panel sets them for the **current model only**; switch models to set another one. `inherit` drops the model's own value; a provider-wide or global value from `acp.json`, or else the default, applies.

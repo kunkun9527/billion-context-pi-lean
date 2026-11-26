@@ -188,6 +188,17 @@ test("applyUserConfig preserves protected adapter fields", () => {
   assert.equal(result.preserveRecentMessages, 5000, "preserveRecentMessages preserved");
 });
 
+test("applyUserConfig takes recent-zone sizes from acp.json and ignores invalid ones", () => {
+  const adapter: AdapterConfig = { preserveRecentMessages: 1 };
+  const set = applyUserConfig(adapter, { preserveRecentMessages: 10, preserveRecentTokens: 0 });
+  assert.equal(set.preserveRecentMessages, 10);
+  assert.equal(set.preserveRecentTokens, 0);
+  const bad = applyUserConfig(adapter, { preserveRecentMessages: -1, preserveRecentTokens: "5K" } as any);
+  assert.equal(bad.preserveRecentMessages, 1, "invalid user value falls back to the adapter value");
+  assert.equal("preserveRecentTokens" in bad, false, "invalid value without an adapter value is dropped");
+  assert.equal(applyUserConfig(adapter, { preserveRecentMessages: 2.5 }).preserveRecentMessages, 1);
+});
+
 test("applyUserConfig with empty user config returns adapter unchanged", () => {
   const adapter: AdapterConfig = {
     modelContextLimit: 200_000,

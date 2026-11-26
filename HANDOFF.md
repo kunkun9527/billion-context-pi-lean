@@ -1,5 +1,7 @@
 # 当前状态
 
+**未提交（2026-11-26）：近期区大小可配置。** `preserveRecentMessages`（默认 5）和 `preserveRecentTokens`（默认 5000）现在从 acp.json 读取（全局；项目级 acp.json 照常覆盖），`/acp-config` 面板里对应 Recent messages 和 Recent tokens 两项，放在 Minimum benefit 之后。校验：必须是非负整数，否则告警，并回退到 adapter 值（`src/user-config.ts`）。`coreOverrides.preserveRecentTokens` 仍然优先（`src/config.ts` resolveConfig）。文档：CONFIGURATION（中英）、README 面板表格（中英）、CHANGELOG `## Unreleased`。用户明确选择两项都开放、只做全局值。同一批还在面板里加了：Emergency threshold（按模型，`compress.emergencyThresholdPercent`，预设 80–98%；低于 Context threshold 时 resolveConfig 把 maxContextLimitPct 降到它，min 一并跟随）、Protect recent reads（只增删 `preserveRecentTools` 里的 `"read"`（忽略大小写）；读状态时按内核 `matchToolPattern` 解释通配；显式的 never-list 没有匹配 read 的项时，关闭会把 read 加进 never-list）。注意：紧急截断只按最后 `preserveRecentMessages` 条原始消息保护，不看 token 窗口和排除表，面板和文档已按此改写。面板按键（用户定）：所有有选项的设置都能 ←→ 前后切换，Enter/空格仍往后切；数字项（`PanelItem.custom`，7 项）直接打数字就在值的位置原地编辑（`33▏`），Enter 存、Esc 取消、上下键取消并移动，错误显示在说明下方。实现在 `makeConfigCommand` 外层 `handleInput` 拦截按键；SettingsList 没有公开选中项，读的是它的私有 `selectedIndex`/`submenuComponent`（面板测试会在它们改名时失败）。底部提示通过包一层 theme.hint 改写。输入的自定义值只在它是当前值时出现在轮换里。范围只限面板（用户选定放宽）：百分比 1–100%、token 0–1M、消息 0–200、分钟 1–1440，只收整数；按模型项留空 = inherit。`parseCustomValue` 有单测，TUI 交互有集成测试。**注意：单跑测试文件必须带隔离环境**（`node --import tsx --import ./tests/support/isolate-env.ts --test tests/config-panel.test.ts`）；直接 `npx tsx --test` 会让面板测试 `rm` 真实的 `~/.pi/acp.json`（本次发生过一次，已按最后已知内容恢复）。每项 `PanelItem.defaultValue` 在描述下单独一行显示 `Default: X.`，描述正文不再写 "(default …)"。用户没选：Strip old images（图移出窗口时会打断缓存）、Throttle retry。改动连同 `dist/` 都还没提交，也没发版。
+
 本次任务的目标是：多次压缩之后，提高 Claude 的 prompt-cache 命中率。基准提交是 v0.3.1 的 `535c090`。
 
 已发布 **v0.4.3**（2026-11-24，合并提交 `c10db4d`，tag `v0.4.3`，GitHub Release 和 npm 都已发布）。发布前 `npm run check` 通过（源码测试 789 个、Lean 测试 27 个），`npm pack --dry-run` 确认含 `lean/index.ts`。包含两项：
@@ -24,6 +26,7 @@
 
 ## 已验证
 
+- 近期区配置 + 两个新面板项 + 默认值单独一行（未提交）：`npm run check` 通过（源码测试 795/795，Lean 测试 27/27），`git diff --check` 通过；真实的 `~/.pi/acp.json` 没有被改动。还没有在真实 TUI 里打开面板试过。
 - `npm run check && git diff --check`：结果见本次提交前的后台日志。
 - 真实运行：在临时目录里用 Haiku 5.5 新建会话，执行一次工具调用，再用 `-c` 恢复会话，然后检查 session 中 `role: system` 的条目。旧代码出现了 `added ['compress'] removed ['compress']`，新代码只有一条初始声明。
 - 线路实测（Haiku 5.5，直接请求本地 CLIProxyAPI 8.0.67）：构造两次请求，第一条 user 消息之后放一段约 2.2 万 token 的稳定前缀 A，后面的内容在第二次请求里换成一句摘要，模拟折叠。不加锚点时，第二次请求的 `cached_tokens` 为 0；在 A 上加锚点后，`/backend-api/codex/responses`（`cliproxyapi-codex-responses`）读到 22,100，`/v1/responses`（Pi 内置的 `openai-responses`）读到 23,404。两条线路都不报错。注意：把 A 放在第一条 user 消息时，不加锚点也能全部命中，因为代理的 cloak 本来就会在第一条 user 消息上打断点。其他代理（例如别家的 Responses 接口）没有条件测试。

@@ -2,7 +2,7 @@ import {
   SIDECAR_SCHEMA_VERSION,
   __export,
   sidecarProducer
-} from "./chunk-BLNIV4H4.js";
+} from "./chunk-WQM27EAF.js";
 
 // src/config-dir.ts
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -177,6 +177,8 @@ var KNOWN = /* @__PURE__ */ new Set([
   "protectedLatestTools",
   "neverPreserveRecentTools",
   "preserveRecentTools",
+  "preserveRecentMessages",
+  "preserveRecentTokens",
   "compress",
   "throttleRetry",
   "idleCompact",
@@ -203,9 +205,16 @@ function applyUserConfig(adapter, user) {
     ...adapter,
     ...user,
     coreOverrides: adapter.coreOverrides,
-    preserveRecentMessages: adapter.preserveRecentMessages,
     externalSystemPrompt: adapter.externalSystemPrompt
   };
+  for (const key of ["preserveRecentMessages", "preserveRecentTokens"]) {
+    if (!(key in user)) continue;
+    const v2 = user[key];
+    if (typeof v2 === "number" && Number.isInteger(v2) && v2 >= 0) continue;
+    console.warn(`[bcp] acp.json "${key}" must be a non-negative integer \u2014 ignoring the value`);
+    if (adapter[key] !== void 0) result[key] = adapter[key];
+    else delete result[key];
+  }
   for (const key of ["protectedTools", "protectedLatestTools"]) {
     if (!(key in user)) continue;
     const cleaned = cleanProtectionList(key, user[key]);
@@ -12235,6 +12244,8 @@ function resolveCompress(compress, provider, modelId) {
   const model = prov && modelId ? prov.models?.[modelId] : void 0;
   return mergeCompress(compress, prov, model);
 }
+var DEFAULT_PRESERVE_RECENT_MESSAGES = 5;
+var DEFAULT_PRESERVE_RECENT_TOKENS = defaultConfig(15e4).preserveRecentTokens;
 function resolveConfig(adapter, liveContextLimit, provider, modelId) {
   const envLimit = process.env.ACP_MODEL_CONTEXT_LIMIT;
   const envLimitNum = envLimit ? Number(envLimit) : NaN;
@@ -12245,7 +12256,8 @@ function resolveConfig(adapter, liveContextLimit, provider, modelId) {
     protectedLatestTools: adapter.protectedLatestTools ?? [],
     neverPreserveRecentTools: adapter.neverPreserveRecentTools,
     preserveRecentTools: adapter.preserveRecentTools,
-    preserveRecentMessages: adapter.preserveRecentMessages ?? 5,
+    preserveRecentMessages: adapter.preserveRecentMessages ?? DEFAULT_PRESERVE_RECENT_MESSAGES,
+    ...adapter.preserveRecentTokens !== void 0 ? { preserveRecentTokens: adapter.preserveRecentTokens } : {},
     ...adapter.coreOverrides
   };
   const config = defaultConfig(limit, overrides);
@@ -12258,6 +12270,8 @@ function resolveConfig(adapter, liveContextLimit, provider, modelId) {
     const pct3 = parsePercent(c.emergencyThresholdPercent);
     config.nudge.emergencyThresholdPct = pct3;
     config.truncate.threshold = pct3;
+    config.nudge.maxContextLimitPct = Math.min(config.nudge.maxContextLimitPct, pct3);
+    config.nudge.minContextLimitPct = Math.min(config.nudge.minContextLimitPct, config.nudge.maxContextLimitPct);
   }
   if (c.nudgeGrowthTokens !== void 0) {
     config.nudge.growthFloor = c.nudgeGrowthTokens;
@@ -20208,7 +20222,7 @@ function resolveActivePack(adapter, cwd, provider, modelId, resolver) {
 }
 var HOST_VERSION = (() => {
   try {
-    return "0.4.3";
+    return "0.5.0";
   } catch {
     return "dev";
   }
@@ -21074,7 +21088,7 @@ async function statusReport(runtime, ctx) {
   const sessionTokens = !anchorStale && realUsage?.tokens && realUsage.tokens > 0 ? realUsage.tokens : defaultCountTokens(coreMessages.map((m2) => m2.text ?? "").join("\n")) + imageTokensTotal + thinkingTokensTotal;
   const viewTokens = adjustedTokenCount(runtime.core, coreMessages, state, config, sentTokens, imageTokens, fixedTokens);
   const turn = runtime.core.processTurn({ messages: coreMessages, state: structuredClone(state), config, tokenCount: displayTokenCount(viewTokens, measurement) });
-  const versionStr = "0.4.3" ? `billion-context-pi@${"0.4.3"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
+  const versionStr = "0.5.0" ? `billion-context-pi@${"0.5.0"} \xB7 pack: ${resolveSurfaceMeta(runtime.adapter, ctx?.cwd ?? process.cwd(), ctx?.model?.provider, ctx?.model?.id).pack}` : void 0;
   const text = buildStatusPanel({
     version: versionStr,
     tokenCount: sessionTokens,
@@ -21947,10 +21961,30 @@ var OFF = "off";
 var TOOL_OUTPUT = "tool-output";
 var INHERIT = "inherit";
 var MAIN_MODEL = "main model";
-var k = (n) => n % 1e3 === 0 ? `${n / 1e3}K` : String(n);
+var k = (n) => n !== 0 && n % 1e3 === 0 ? `${n / 1e3}K` : String(n);
 var parseK = (v2) => v2.endsWith("K") ? Number(v2.slice(0, -1)) * 1e3 : Number(v2);
 var pct2 = (n) => `${Math.round(n * 100)}%`;
 var withCurrent = (list, current) => list.includes(current) ? list : [...list, current];
+var PERCENT = { min: 1, max: 100, unit: "%" };
+var TOKENS = { min: 0, max: 1e6, unit: "tokens" };
+function rangeText(r) {
+  if (r.unit === "%") return `${r.min}%\u2013${r.max}%`;
+  if (r.unit === "tokens") return `${k(r.min)}\u2013${r.max === 1e6 ? "1M" : k(r.max)} tokens`;
+  return `${r.min}\u2013${r.max} ${r.unit}`;
+}
+function parseCustomValue(item, text) {
+  const r = item.custom;
+  if (!r) throw new Error(`${item.id} takes no typed value`);
+  const t = text.trim();
+  if (t === "") return item.model ? { value: INHERIT } : { error: "Type a number." };
+  const m2 = (r.unit === "%" ? /^(\d+(?:\.\d+)?)\s*(%)?$/ : r.unit === "tokens" ? /^(\d+(?:\.\d+)?)\s*([kK])?$/ : /^(\d+(?:\.\d+)?)()$/).exec(t);
+  const n = m2 ? Number(m2[1]) * (r.unit === "tokens" && m2[2] ? 1e3 : 1) : NaN;
+  if (!Number.isInteger(n)) {
+    return { error: r.unit === "%" ? "Type a whole percent, like 85 or 85%." : r.unit === "tokens" ? "Type a whole number of tokens, like 20000 or 20K." : "Type a whole number." };
+  }
+  if (n < r.min || n > r.max) return { error: `Out of range: ${rangeText(r)}.` };
+  return { value: r.unit === "%" ? `${n}%` : r.unit === "tokens" ? k(n) : String(n) };
+}
 function obj(parent, key) {
   const v2 = parent[key];
   if (v2 && typeof v2 === "object" && !Array.isArray(v2)) return v2;
@@ -21983,12 +22017,14 @@ function modelSettings(raw, scope) {
 function modelValue(adapter, scope, key) {
   return adapter.compress?.providers?.[scope.provider]?.models?.[scope.modelId]?.[key];
 }
-function modelKeyItem(id, label, description, presets, format, parse) {
+function modelKeyItem(id, label, description, defaultValue, presets, format, parse, custom) {
   return {
     id,
     label,
     description,
+    defaultValue,
     model: true,
+    custom,
     values: (current) => withCurrent([INHERIT, ...presets], current),
     read(adapter, scope) {
       const v2 = modelValue(adapter, scope, id);
@@ -22012,6 +22048,7 @@ var PANEL_ITEMS = [
     id: "compressionModelId",
     label: "Summary model",
     description: "Who writes compression summaries. A cheap model saves the main model's tokens; session reuses the current model and its cached prefix; main model lets the main model write them itself.",
+    defaultValue: MAIN_MODEL,
     read: (a) => typeof a.compressionModelId === "string" && a.compressionModelId.trim() ? a.compressionModelId.trim() : MAIN_MODEL,
     write(raw, value) {
       if (value === MAIN_MODEL) delete raw.compressionModelId;
@@ -22022,6 +22059,7 @@ var PANEL_ITEMS = [
     id: "idleEnabled",
     label: "Idle compact",
     description: "After the session has been idle for the set minutes, start one turn in which the main model decides whether to compress, so you come back to a shorter context instead of paying for a long uncached input.",
+    defaultValue: OFF,
     values: () => [ON, OFF],
     read: (a) => resolveIdleCompact(a.idleCompact).enabled ? ON : OFF,
     write(raw, value) {
@@ -22032,20 +22070,65 @@ var PANEL_ITEMS = [
     id: "idleMinutes",
     label: "Idle minutes",
     dependsOn: "idleEnabled",
-    description: `Idle time before the idle compact turn (default ${DEFAULT_IDLE_MINUTES}). Keep it a little under your models' prompt-cache lifetime, or that turn itself reads the context uncached.`,
+    defaultValue: String(DEFAULT_IDLE_MINUTES),
+    description: `Idle time before the idle compact turn. Keep it a little under your models' prompt-cache lifetime, or that turn itself reads the context uncached.`,
     values: (current) => withCurrent(["10", "15", "20", "25", "29", "45", "55"], current),
+    custom: { min: 1, max: 1440, unit: "minutes" },
     read: (a) => String(resolveIdleCompact(a.idleCompact).idleMinutes),
     write(raw, value) {
       idleObject(raw).idleMinutes = Number(value);
     }
   },
-  modelKeyItem("maxContextLimit", "Context threshold", "Share of the window above which the compress nudge stops waiting for Nudge interval and appears whenever Minimum benefit could be reclaimed (default 75%). Not a hard cap. Current model only.", ["40%", "45%", "50%", "60%", "70%", "75%", "80%"], pct2, (v2) => Number(v2.slice(0, -1)) / 100),
-  modelKeyItem("nudgeGrowthTokens", "Nudge interval", "Below Context threshold, the compress nudge waits until about this many tokens of old, compressible content have piled up (default 50K). Bigger: fewer nudges, more folded at once. Current model only.", ["30K", "50K", "70K", "100K", "150K", "200K"], k, parseK),
-  modelKeyItem("minPressureBenefitTokens", "Minimum benefit", "No compress nudge, and no idle compact turn, when less than this could be reclaimed (default: larger of 5K and 1% of the window). Current model only.", ["5K", "10K", "20K", "30K", "50K"], k, parseK),
+  modelKeyItem("maxContextLimit", "Context threshold", "When the context grows past this share of the window, the model is reminded to compress more often: whenever at least Minimum benefit could be freed, instead of waiting for Nudge interval. Not a hard cap: the context can still grow beyond it. Current model only.", "75%", ["40%", "45%", "50%", "60%", "70%", "75%", "80%"], pct2, (v2) => Number(v2.slice(0, -1)) / 100, PERCENT),
+  modelKeyItem("emergencyThresholdPercent", "Emergency threshold", "Last-resort safety net. Once the context reaches this share of the window, older big tool outputs and long messages are cut down to their beginning and end, with no summary, so the session does not overflow. The newest messages (as many as Recent messages) are left alone. If you set it below Context threshold, Context threshold drops to match, so compress reminders start no later than truncation; when the two are equal, both happen on the same turn. Current model only.", "95%", ["80%", "85%", "90%", "95%", "98%"], pct2, (v2) => Number(v2.slice(0, -1)) / 100, PERCENT),
+  modelKeyItem("nudgeGrowthTokens", "Nudge interval", "Until Context threshold is reached, the model is reminded to compress only after about this many tokens of old content have piled up. Bigger: fewer reminders, more folded each time. Smaller: frequent small compressions. Current model only.", "50K", ["30K", "50K", "70K", "100K", "150K", "200K"], k, parseK, TOKENS),
+  modelKeyItem("minPressureBenefitTokens", "Minimum benefit", "No reminder to compress, and no idle compact, when less than this could be freed: saving a few thousand tokens isn't worth breaking the cache. Current model only.", "larger of 5K and 1% of the window", ["5K", "10K", "20K", "30K", "50K"], k, parseK, TOKENS),
+  {
+    id: "preserveRecentMessages",
+    label: "Recent messages",
+    description: "How many of the newest messages compress must leave alone. Each tool call and each result counts as one. read and bash output is not counted and can be folded right away, because it is easy to get again (Protect recent reads keeps reads). Unless this is 0, your latest message is kept too. Emergency truncation also spares this many newest messages, counting everything. All models.",
+    defaultValue: String(DEFAULT_PRESERVE_RECENT_MESSAGES),
+    values: (current) => withCurrent(["0", "1", "3", "5", "8", "10", "15", "20"], current),
+    custom: { min: 0, max: 200, unit: "messages" },
+    read: (a) => String(a.preserveRecentMessages ?? DEFAULT_PRESERVE_RECENT_MESSAGES),
+    write(raw, value) {
+      raw.preserveRecentMessages = Number(value);
+    }
+  },
+  {
+    id: "preserveRecentTokens",
+    label: "Recent tokens",
+    description: "Compress also leaves alone the newest messages, up to about this many tokens. Whichever of this and Recent messages covers more applies. Skips the same tools as Recent messages. 0 turns it off. Emergency truncation ignores it. All models.",
+    defaultValue: k(DEFAULT_PRESERVE_RECENT_TOKENS),
+    values: (current) => withCurrent(["0", "2K", "5K", "10K", "20K", "50K"], current),
+    custom: TOKENS,
+    read: (a) => k(a.preserveRecentTokens ?? DEFAULT_PRESERVE_RECENT_TOKENS),
+    write(raw, value) {
+      raw.preserveRecentTokens = parseK(value);
+    }
+  },
+  {
+    id: "protectRecentReads",
+    label: "Protect recent reads",
+    description: `Off: a file the model just read can be folded right away, like bash output. On: recent read results are kept like other tools' results, so the recent zone gets a bit bigger. Turn on if the model keeps re-reading the same file. Patterns you wrote by hand in acp.json, such as "r*", are respected but not edited. All models.`,
+    defaultValue: OFF,
+    values: () => [ON, OFF],
+    read: (a) => readsProtected(a) ? ON : OFF,
+    write(raw, value) {
+      const isRead = (t) => typeof t === "string" && t.trim().toLowerCase() === "read";
+      const preserve = Array.isArray(raw.preserveRecentTools) ? raw.preserveRecentTools.filter((t) => !isRead(t)) : [];
+      if (value === ON) preserve.push("read");
+      if (preserve.length > 0) raw.preserveRecentTools = preserve;
+      else delete raw.preserveRecentTools;
+      const never = raw.neverPreserveRecentTools;
+      if (value === OFF && Array.isArray(never) && !never.some((t) => typeof t === "string" && matchToolPattern("read", t.trim()))) never.push("read");
+    }
+  },
   {
     id: "claudeFoldAnchor",
     label: "Claude fold anchor",
-    description: "Claude models on a *responses API only: also cache-mark the part of the history the next compress will not touch, so it stays in the prompt cache after a fold. tool-output also marks a tool output there (needs CLIProxyAPI 8.1.1+; other endpoints may not accept it). Ignored for other models. Stored as the global compress.claudeFoldAnchor.",
+    defaultValue: ON,
+    description: "Claude models through a *responses API only. Keeps the prompt cache alive after a compress: the part of the history that compress won't touch gets a cache mark, so the next request doesn't pay full price for it again. tool-output may also put the mark on a tool output, which usually keeps more cached (needs CLIProxyAPI 8.1.1+; other endpoints may reject it). Other models ignore this. Stored as the global compress.claudeFoldAnchor.",
     values: () => [ON, TOOL_OUTPUT, OFF],
     read: (a) => {
       const v2 = a.compress?.claudeFoldAnchor;
@@ -22063,6 +22146,7 @@ var PANEL_ITEMS = [
     id: "debug",
     label: "Debug log",
     description: "Write detailed events to ~/.pi/acp.log for troubleshooting. Errors and main events are always logged.",
+    defaultValue: OFF,
     values: () => [ON, OFF],
     read: (a) => a.debug === true ? ON : OFF,
     write(raw, value) {
@@ -22070,6 +22154,11 @@ var PANEL_ITEMS = [
     }
   }
 ];
+function readsProtected(a) {
+  const preserve = a.preserveRecentTools ?? [];
+  const excluded = (a.neverPreserveRecentTools ?? ["read"]).filter((t) => !preserve.some((p) => matchToolPattern(t, p)));
+  return !excluded.some((t) => matchToolPattern("read", t));
+}
 function panelItemsFor(scope) {
   return PANEL_ITEMS.filter((item) => !item.model || scope.provider && scope.modelId);
 }
@@ -22112,7 +22201,10 @@ function makeConfigCommand(runtime, idle) {
           const describe = (item, shown) => {
             const upstream = item.dependsOn && items.find((i) => i.id === item.dependsOn);
             const extra = shown.locked && upstream ? `Turn on "${upstream.label}" to change this.` : item.model && shown.currentValue === INHERIT ? inheritedNote(item.id, effective) : "";
-            return extra ? `${item.description} ${extra}` : item.description;
+            const own = item.custom && shown.values ? `
+Or type your own: ${rangeText(item.custom)}${item.model ? ", empty = inherit" : ""}.` : "";
+            return `${extra ? `${item.description} ${extra}` : item.description}${own}
+Default: ${item.defaultValue}.`;
           };
           const settingItems = items.map((item) => {
             const shown = panelDisplay(item, runtime.adapter, scope);
@@ -22126,10 +22218,16 @@ function makeConfigCommand(runtime, idle) {
           const container = new Container();
           const where = scope.provider && scope.modelId ? `current model ${scope.provider}/${scope.modelId}` : "no current model, per-model settings hidden";
           container.addChild(new Text(theme.fg("accent", theme.bold("ACP settings")) + theme.fg("dim", `  saved to ~/.pi/acp.json \xB7 ${where}`), 0, 0));
+          let editing;
+          const listTheme = getSettingsListTheme();
           const list = new SettingsList(
             settingItems,
             Math.min(settingItems.length + 2, 15),
-            getSettingsListTheme(),
+            {
+              ...listTheme,
+              // SettingsList's hint text is fixed; name the extra keys this panel adds.
+              hint: (text) => listTheme.hint(editing ? "  Enter to save \xB7 Backspace to edit \xB7 Esc to cancel" : text.replace("Enter/Space to change", "\u2190\u2192 or Enter/Space to change \xB7 type a number for your own"))
+            },
             (id, value) => {
               void save(id, value).catch((e) => ctx.ui.notify(`[ACP] Save failed: ${e instanceof Error ? e.message : String(e)}`, "error"));
             },
@@ -22144,9 +22242,9 @@ function makeConfigCommand(runtime, idle) {
             const now = readPanelValue(runtime.adapter, id, scope);
             if (now !== value) {
               list.updateValue(id, now);
-              ctx.ui.notify(`[ACP] Saved to the global config, but the project .pi/acp.json overrides this setting; in effect: ${now}`, "warning");
+              ctx.ui.notify(`[ACP] Saved to the global config, but the project .pi/acp.json or a hand-written pattern decides this setting; in effect: ${now}`, "warning");
             }
-            for (const item of items.filter((i) => i.dependsOn === id)) {
+            for (const item of items.filter((i) => i.id === id || i.dependsOn === id)) {
               const setting = settingItems.find((s) => s.id === item.id);
               const shown = panelDisplay(item, runtime.adapter, scope);
               setting.currentValue = shown.currentValue;
@@ -22155,11 +22253,66 @@ function makeConfigCommand(runtime, idle) {
             }
             tui.requestRender();
           };
+          const commit = (id, value) => {
+            void save(id, value).catch((e) => ctx.ui.notify(`[ACP] Save failed: ${e instanceof Error ? e.message : String(e)}`, "error"));
+          };
+          const stopEditing = (restore) => {
+            if (!editing) return;
+            if (restore) editing.setting.currentValue = editing.before;
+            editing.setting.description = editing.description;
+            editing = void 0;
+          };
+          const showDraft = (error = "") => {
+            if (!editing) return;
+            editing.setting.currentValue = `${editing.text}\u258F`;
+            editing.setting.description = error ? `${editing.description}
+${theme.fg("warning", error)}` : editing.description;
+          };
+          const listState = list;
+          const handleEdit = (data) => {
+            const kb = getKeybindings();
+            const e = editing;
+            if (kb.matches(data, "tui.select.confirm")) {
+              const r = parseCustomValue(e.item, e.text);
+              if ("error" in r) return showDraft(r.error);
+              stopEditing(false);
+              e.setting.currentValue = r.value;
+              commit(e.item.id, r.value);
+            } else if (kb.matches(data, "tui.select.cancel")) {
+              stopEditing(true);
+            } else if (kb.matches(data, "tui.editor.deleteCharBackward")) {
+              e.text = e.text.slice(0, -1);
+              showDraft();
+            } else if (kb.matches(data, "tui.select.up") || kb.matches(data, "tui.select.down")) {
+              stopEditing(true);
+              list.handleInput(data);
+            } else if (/^[0-9.%kK]$/.test(data) && e.text.length < 12) {
+              e.text += data;
+              showDraft();
+            }
+          };
           return {
             render: (width) => container.render(width),
             invalidate: () => container.invalidate(),
             handleInput(data) {
-              list.handleInput(data);
+              const kb = getKeybindings();
+              const setting = listState.submenuComponent ? void 0 : settingItems[listState.selectedIndex];
+              const item = setting && items.find((i) => i.id === setting.id);
+              const values = setting?.values;
+              const step = kb.matches(data, "tui.editor.cursorRight") ? 1 : kb.matches(data, "tui.editor.cursorLeft") ? -1 : 0;
+              if (editing) {
+                handleEdit(data);
+              } else if (step && setting && values && values.length > 0 && !setting.submenu) {
+                const at = values.indexOf(setting.currentValue);
+                const next = values[at < 0 ? step > 0 ? 0 : values.length - 1 : (at + step + values.length) % values.length];
+                setting.currentValue = next;
+                commit(setting.id, next);
+              } else if (item?.custom && setting && values && /^[0-9]$/.test(data)) {
+                editing = { item, setting, text: data, before: setting.currentValue, description: setting.description ?? "" };
+                showDraft();
+              } else {
+                list.handleInput(data);
+              }
               tui.requestRender();
             }
           };
@@ -22209,7 +22362,7 @@ var SearchableList = class {
 };
 function inheritedNote(id, effective) {
   const v2 = effective[id];
-  if (typeof v2 === "number") return `Inherited value: ${id === "maxContextLimit" ? pct2(v2) : k(v2)}.`;
+  if (typeof v2 === "number") return `Inherited value: ${id === "maxContextLimit" || id === "emergencyThresholdPercent" ? pct2(v2) : k(v2)}.`;
   if (typeof v2 === "string") return `Inherited value: ${v2}.`;
   return "";
 }
@@ -22313,7 +22466,7 @@ function wireSessionLifecycle(pi, runtime, standDownIfProxied) {
     const sid = ctx.sessionManager.getSessionId();
     forgetFoldAnchor(sid);
     const modelInfo = ctx.model;
-    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.4.3" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
+    logInfo("session", { event: "start", sid, cwd: ctx.cwd, debug: runtime.adapter.debug ?? null, version: true ? "0.5.0" : null, model: modelInfo?.id ?? null, modelApi: modelInfo?.api ?? null, contextWindow: modelInfo?.contextWindow ?? null });
     try {
       await runtime.reloadConfig(ctx.cwd);
     } catch (e) {

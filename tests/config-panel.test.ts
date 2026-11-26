@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { PANEL_ITEMS, SearchableList, applyPanelValue, makeConfigCommand, panelDisplay, panelItemsFor, readPanelValue } from "../src/config-panel.js";
+import { PANEL_ITEMS, SearchableList, applyPanelValue, makeConfigCommand, panelDisplay, panelItemsFor, parseCustomValue, readPanelValue } from "../src/config-panel.js";
 import { userConfigPath } from "../src/config-dir.js";
 import { updateGlobalAcpConfig } from "../src/user-config.js";
 import { createRuntime } from "../src/runtime.js";
@@ -60,6 +60,64 @@ test("readPanelValue shows effective values and defaults", () => {
   assert.equal(readPanelValue(adapter, "maxContextLimit", scope), "45%");
   assert.equal(readPanelValue(adapter, "minPressureBenefitTokens", scope), "inherit");
   assert.equal(readPanelValue(adapter, "compressionModelId", scope), "main model");
+  assert.equal(readPanelValue(adapter, "preserveRecentMessages", scope), "5");
+  assert.equal(readPanelValue(adapter, "preserveRecentTokens", scope), "5K");
+  assert.equal(readPanelValue({ preserveRecentMessages: 0, preserveRecentTokens: 0 }, "preserveRecentTokens", scope), "0");
+});
+
+test("every panel item names its default, and descriptions no longer repeat it inline", () => {
+  for (const item of PANEL_ITEMS) {
+    assert.ok(item.defaultValue, `${item.id} has a default`);
+    assert.doesNotMatch(item.description, /\(default/i, `${item.id} description`);
+  }
+});
+
+test("Emergency threshold is a per-model percent key", () => {
+  const raw: Record<string, any> = {};
+  applyPanelValue(raw, "emergencyThresholdPercent", "90%", scope);
+  assert.deepEqual(raw.compress.providers.cliproxyapi.models["claude-opus-5-5"], { emergencyThresholdPercent: 0.9 });
+  assert.equal(readPanelValue(raw as any, "emergencyThresholdPercent", scope), "90%");
+  applyPanelValue(raw, "emergencyThresholdPercent", "inherit", scope);
+  assert.equal(raw.compress, undefined);
+  assert.equal(panelItemsFor({}).some((i) => i.id === "emergencyThresholdPercent"), false, "hidden without a model");
+});
+
+test("Protect recent reads adds or removes only \"read\" in preserveRecentTools", () => {
+  const raw: Record<string, any> = { preserveRecentTools: ["grep"] };
+  assert.equal(readPanelValue(raw as any, "protectRecentReads", scope), "off");
+  applyPanelValue(raw, "protectRecentReads", "on", scope);
+  applyPanelValue(raw, "protectRecentReads", "on", scope);
+  assert.deepEqual(raw.preserveRecentTools, ["grep", "read"]);
+  assert.equal(readPanelValue(raw as any, "protectRecentReads", scope), "on");
+  applyPanelValue(raw, "protectRecentReads", "off", scope);
+  assert.deepEqual(raw.preserveRecentTools, ["grep"]);
+  const only: Record<string, any> = { preserveRecentTools: ["read"] };
+  applyPanelValue(only, "protectRecentReads", "off", scope);
+  assert.equal("preserveRecentTools" in only, false, "an emptied list is removed");
+  const never: Record<string, any> = { neverPreserveRecentTools: ["bash"] };
+  assert.equal(readPanelValue(never as any, "protectRecentReads", scope), "on", "an explicit never-list without read already protects reads");
+  applyPanelValue(never, "protectRecentReads", "off", scope);
+  assert.deepEqual(never.neverPreserveRecentTools, ["bash", "read"]);
+  assert.equal(readPanelValue(never as any, "protectRecentReads", scope), "off");
+  assert.equal(readPanelValue({ preserveRecentTools: ["r*"] } as any, "protectRecentReads", scope), "on", "a glob in preserveRecentTools protects reads, as in the kernel");
+  assert.equal(readPanelValue({ preserveRecentTools: ["READ"] } as any, "protectRecentReads", scope), "on", "matching is case-insensitive");
+  assert.equal(readPanelValue({ neverPreserveRecentTools: ["re*"] } as any, "protectRecentReads", scope), "off", "a glob in the never-list excludes reads");
+  const globNever: Record<string, any> = { neverPreserveRecentTools: ["re*"] };
+  applyPanelValue(globNever, "protectRecentReads", "off", scope);
+  assert.deepEqual(globNever.neverPreserveRecentTools, ["re*"], "no redundant read when a glob already excludes it");
+});
+
+test("recent-zone items write global integers and show on every model", () => {
+  const raw: Record<string, any> = {};
+  applyPanelValue(raw, "preserveRecentMessages", "10", scope);
+  applyPanelValue(raw, "preserveRecentTokens", "20K", scope);
+  assert.deepEqual(raw, { preserveRecentMessages: 10, preserveRecentTokens: 20_000 });
+  applyPanelValue(raw, "preserveRecentTokens", "0", scope);
+  assert.equal(raw.preserveRecentTokens, 0);
+  const ids = panelItemsFor({}).map((i) => i.id);
+  assert.ok(ids.includes("preserveRecentMessages") && ids.includes("preserveRecentTokens"), "not model-scoped");
+  const shown = panelDisplay(PANEL_ITEMS.find((i) => i.id === "preserveRecentTokens")!, { preserveRecentTokens: 0 }, scope);
+  assert.equal(shown.values!.filter((v) => v === "0").length, 1, "0 is one preset, not 0 plus 0K");
 });
 
 test("per-model items are hidden without a current model", () => {
@@ -120,6 +178,102 @@ test("summary-model picker: typing filters fuzzily, Enter picks, Esc goes back",
   assert.deepEqual(picked, ["cliproxyapi/claude-opus-5-5", undefined]);
 });
 
+test("parseCustomValue: whole numbers in the panel range, in the presets' format", () => {
+  const item = (id: string) => PANEL_ITEMS.find((i) => i.id === id)!;
+  assert.deepEqual(parseCustomValue(item("maxContextLimit"), "33"), { value: "33%" });
+  assert.deepEqual(parseCustomValue(item("maxContextLimit"), " 33% "), { value: "33%" });
+  assert.deepEqual(parseCustomValue(item("maxContextLimit"), ""), { value: "inherit" }, "empty inherits on per-model items");
+  assert.match((parseCustomValue(item("maxContextLimit"), "0") as any).error, /Out of range: 1%–100%/);
+  assert.match((parseCustomValue(item("maxContextLimit"), "101%") as any).error, /Out of range/);
+  assert.match((parseCustomValue(item("maxContextLimit"), "85.5") as any).error, /whole percent/);
+  assert.deepEqual(parseCustomValue(item("nudgeGrowthTokens"), "25k"), { value: "25K" });
+  assert.deepEqual(parseCustomValue(item("nudgeGrowthTokens"), "2.5K"), { value: "2500" });
+  assert.deepEqual(parseCustomValue(item("preserveRecentTokens"), "0"), { value: "0" });
+  assert.deepEqual(parseCustomValue(item("preserveRecentTokens"), "1000K"), { value: "1000K" });
+  assert.match((parseCustomValue(item("preserveRecentTokens"), "1001K") as any).error, /0–1M tokens/);
+  assert.match((parseCustomValue(item("preserveRecentTokens"), "") as any).error, /Type a number/, "global items have no inherit");
+  assert.deepEqual(parseCustomValue(item("preserveRecentMessages"), "200"), { value: "200" });
+  assert.match((parseCustomValue(item("preserveRecentMessages"), "201") as any).error, /0–200 messages/);
+  assert.match((parseCustomValue(item("preserveRecentMessages"), "1e2") as any).error, /whole number/);
+  assert.match((parseCustomValue(item("idleMinutes"), "0") as any).error, /1–1440 minutes/);
+  for (const i of PANEL_ITEMS.filter((p) => p.custom)) {
+    const v = parseCustomValue(i, "7") as { value: string };
+    const raw: Record<string, any> = { idleCompact: { enabled: true } };
+    applyPanelValue(raw, i.id, v.value, scope);
+    assert.equal(readPanelValue(raw as any, i.id, scope), v.value, `${i.id} reads back as typed`);
+  }
+});
+
+test("/acp-config: ←→ step through presets, typing a number edits the value in place", async () => {
+  const file = userConfigPath(homedir(), "acp.json");
+  await rm(file, { force: true });
+  initTheme("dark");
+  const runtime = createRuntime({});
+  const command = makeConfigCommand(runtime, { noteNudge() {}, takeForcedNudge: () => false, rearm() {} });
+  let component: any;
+  const notices: string[] = [];
+  const ctx: any = {
+    mode: "tui",
+    cwd: dirname(file),
+    model: { provider: "cliproxyapi", id: "claude-opus-5-5" },
+    modelRegistry: { getAvailable: () => [] },
+    ui: {
+      notify: (m: string) => notices.push(m),
+      custom: async (factory: any) => {
+        component = await factory({ requestRender() {} }, { fg: (_c: string, t: string) => t, bold: (t: string) => t }, {}, () => {});
+      },
+    },
+  };
+  await command.options.handler("", ctx);
+  const plain = () => component.render(120).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  const savedRaw = async (check: (raw: any) => boolean, what: string) => {
+    for (let i = 0; i < 100; i++) {
+      const raw = await readFile(file, "utf8").then(JSON.parse, () => ({}));
+      if (check(raw)) return;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.fail(`never saved: ${what}`);
+  };
+  const saved = (want: number) => savedRaw((raw) => raw.preserveRecentMessages === want, `preserveRecentMessages ${want}`);
+  const RIGHT = "\x1b[C";
+  const LEFT = "\x1b[D";
+  assert.match(plain(), /←→ or Enter\/Space to change · type a number for your own/);
+  component.handleInput("\x1b[B"); // idle compact (an on/off switch): ←→ toggles it too
+  component.handleInput(RIGHT);
+  await savedRaw((raw) => raw.idleCompact?.enabled === true, "idle compact on");
+  const ids = panelItemsFor(scope).map((i) => i.id);
+  for (let i = ids.indexOf("idleEnabled"); i < ids.indexOf("preserveRecentMessages"); i++) component.handleInput("\x1b[B");
+  assert.match(plain(), /Or type your own: 0–200 messages\./);
+  component.handleInput(RIGHT);
+  await saved(8);
+  component.handleInput(LEFT);
+  component.handleInput(LEFT);
+  await saved(3);
+  component.handleInput("\r"); // Enter still steps forward
+  await saved(5);
+  for (const key of ["9", "9", "9"]) component.handleInput(key);
+  assert.match(plain(), /Recent messages\s+999▏/, "typing edits in place");
+  assert.match(plain(), /Enter to save · Backspace to edit · Esc to cancel/);
+  component.handleInput("\r");
+  assert.match(plain(), /Out of range: 0–200 messages\./, "an out-of-range value stays in the editor");
+  component.handleInput("\x1b"); // Esc restores the old value, nothing saved
+  assert.match(plain(), /Recent messages\s+5(?!▏)/);
+  assert.doesNotMatch(plain(), /Out of range/);
+  for (const key of ["3", "4", "\x7f", "3", "\r"]) component.handleInput(key);
+  await saved(33);
+  assert.match(plain(), /Recent messages\s+33/);
+  component.handleInput(RIGHT); // the typed value joined the presets as the last one; → wraps to the first
+  await saved(0);
+  component.handleInput(LEFT); // a typed value stays in the cycle only while it is the current one
+  await saved(20);
+  component.handleInput("1");
+  component.handleInput("\x1b[A"); // moving away cancels the edit
+  assert.doesNotMatch(plain(), /▏/);
+  assert.deepEqual(notices, []);
+  assert.equal(runtime.adapter.preserveRecentMessages, 20);
+  await rm(file, { force: true });
+});
+
 test("/acp-config panel renders, toggles a setting, and saves it to the global acp.json", async () => {
   const file = userConfigPath(homedir(), "acp.json");
   await rm(file, { force: true });
@@ -148,6 +302,7 @@ test("/acp-config panel renders, toggles a setting, and saves it to the global a
   assert.match(lines, /cliproxyapi\/claude-opus-5-5/);
   const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   assert.match(plain(lines), /Idle minutes\s+off/, "minutes locked while idle compact is off");
+  assert.match(plain(lines), /\n\s*Default: main model\./, "the selected item's default sits on its own line");
   component.handleInput("\x1b[B"); // down: summary model → idle compact
   component.handleInput("\x1b[B"); // down: idle minutes (locked)
   component.handleInput("\r"); // no-op while locked

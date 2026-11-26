@@ -16,6 +16,8 @@ export interface UserAcpConfig {
     protectedLatestTools?: string[];
     neverPreserveRecentTools?: string[];
     preserveRecentTools?: string[];
+    preserveRecentMessages?: number;
+    preserveRecentTokens?: number;
     compress?: CompressConfig;
     outputHeadroomMaxPct?: number | string;
     throttleRetry?: boolean | ThrottleRetryConfig;

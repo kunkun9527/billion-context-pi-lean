@@ -15,15 +15,33 @@ export interface PanelItem {
     id: string;
     label: string;
     description: string;
+    /** Built-in value when acp.json does not set the key; shown on its own line under the description. */
+    defaultValue: string;
     /** Model-scoped items need a current model. */
     model?: boolean;
     /** Upstream switch: while it reads off, this item shows off and is locked;
      *  its stored value is kept so turning the switch back on restores it. */
     dependsOn?: string;
     values?: (current: string) => string[];
+    /** Number items: typing a number edits the value in place; it must be a whole number in this range. */
+    custom?: NumberRange;
     read(adapter: AdapterConfig, scope: PanelScope): string;
     write(raw: Raw, value: string, scope: PanelScope): void;
 }
+/** Panel-only bounds for typed values; acp.json keeps its own, looser checks. */
+export interface NumberRange {
+    min: number;
+    max: number;
+    unit: "%" | "tokens" | "minutes" | "messages";
+}
+/** Turn typed text into a panel value (same format as the presets), or say what is wrong.
+ *  Whole numbers only, so the saved value reads back exactly as typed. Empty means
+ *  inherit on per-model items. */
+export declare function parseCustomValue(item: PanelItem, text: string): {
+    value: string;
+} | {
+    error: string;
+};
 /** Order = importance: summary model and idle compact first, per-model
  *  compression next, debug last. */
 export declare const PANEL_ITEMS: PanelItem[];

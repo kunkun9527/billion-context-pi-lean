@@ -151,7 +151,16 @@ export interface AdapterConfig {
    *  INVALID here (pure no-op — use neverPreserveRecentTools: [] for
    *  protect-everything instead). */
   preserveRecentTools?: string[];
+  /** Recent zone, rule 1: the last N visible messages (each tool call and
+   *  each tool result is one message; neverPreserveRecentTools results are
+   *  skipped) are kept out of compress ranges and emergency truncation.
+   *  N > 0 also protects the latest user message. Default 5. acp.json key. */
   preserveRecentMessages?: number;
+  /** Recent zone, rule 2: counting back from the newest visible message,
+   *  messages are protected until about this many tokens are covered.
+   *  0 disables the rule. Default: kernel default (5000). acp.json key;
+   *  coreOverrides.preserveRecentTokens still wins for code-level hosts. */
+  preserveRecentTokens?: number;
   /** Enable debug-level events in the ACP log file (default ~/.pi/acp.log).
    *  Always-on events (session/turn/compress lifecycle, all errors and
    *  warnings) are written regardless; `debug` only adds verbose diagnostics.
@@ -292,6 +301,9 @@ export function resolveCompress(
   return mergeCompress(compress, prov, model);
 }
 
+export const DEFAULT_PRESERVE_RECENT_MESSAGES = 5;
+export const DEFAULT_PRESERVE_RECENT_TOKENS = defaultConfig(150_000).preserveRecentTokens;
+
 export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, provider?: string, modelId?: string): Config {
   const envLimit = process.env.ACP_MODEL_CONTEXT_LIMIT;
   const envLimitNum = envLimit ? Number(envLimit) : NaN;
@@ -315,7 +327,8 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
     protectedLatestTools: adapter.protectedLatestTools ?? [],
     neverPreserveRecentTools: adapter.neverPreserveRecentTools,
     preserveRecentTools: adapter.preserveRecentTools,
-    preserveRecentMessages: adapter.preserveRecentMessages ?? 5,
+    preserveRecentMessages: adapter.preserveRecentMessages ?? DEFAULT_PRESERVE_RECENT_MESSAGES,
+    ...(adapter.preserveRecentTokens !== undefined ? { preserveRecentTokens: adapter.preserveRecentTokens } : {}),
     ...adapter.coreOverrides,
   };
   const config = defaultConfig(limit, overrides);
@@ -332,6 +345,11 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
     const pct = parsePercent(c.emergencyThresholdPercent);
     config.nudge.emergencyThresholdPct = pct;
     config.truncate.threshold = pct;
+    // validateConfig only warns when maxContextLimitPct exceeds the emergency
+    // threshold, and emergency truncation would then fire before the normal
+    // compress nudge. Pull the nudge thresholds down so they never overtake it.
+    config.nudge.maxContextLimitPct = Math.min(config.nudge.maxContextLimitPct, pct);
+    config.nudge.minContextLimitPct = Math.min(config.nudge.minContextLimitPct, config.nudge.maxContextLimitPct);
   }
   if (c.nudgeGrowthTokens !== undefined) {
     config.nudge.growthFloor = c.nudgeGrowthTokens;

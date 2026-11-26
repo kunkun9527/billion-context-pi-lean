@@ -89,6 +89,17 @@ test("resolveConfig maps compress.emergencyThresholdPercent to both nudge.emerge
   assert.equal(cfg.truncate.threshold, 0.9);
 });
 
+test("resolveConfig lowers maxContextLimit to an emergency threshold below it", () => {
+  const cfg = resolveConfig({ compress: { maxContextLimit: "90%", emergencyThresholdPercent: "80%" } }, 1_000_000);
+  assert.equal(cfg.nudge.maxContextLimitPct, 0.8);
+  assert.equal(cfg.truncate.threshold, 0.8);
+  const low = resolveConfig({ compress: { emergencyThresholdPercent: "40%" } }, 1_000_000);
+  assert.equal(low.nudge.maxContextLimitPct, 0.4);
+  assert.equal(low.nudge.minContextLimitPct, 0.4, "cold-start gate follows");
+  const kept = resolveConfig({ compress: { maxContextLimit: "70%", emergencyThresholdPercent: "95%" } }, 1_000_000);
+  assert.equal(kept.nudge.maxContextLimitPct, 0.7);
+});
+
 test("resolveConfig maps compress.nudgeGrowthTokens to both growthFloor and growthCap", () => {
   const cfg = resolveConfig({ compress: { nudgeGrowthTokens: 30000 } }, 1_000_000);
   assert.equal(cfg.nudge.growthFloor, 30000);
@@ -259,4 +270,16 @@ test("resolveConfig passes preserveRecentTools verbatim (the one-entry #1198/#12
   const cfg = resolveConfig({ preserveRecentTools: ["read"] }, 200_000);
   assert.deepEqual(cfg.preserveRecentTools, ["read"]);
   assert.equal(resolveConfig({}, 200_000).preserveRecentTools, undefined, "unset → no subtraction, kernel built-in governs");
+});
+
+test("resolveConfig sizes the recent zone from preserveRecentMessages / preserveRecentTokens", () => {
+  const defaults = resolveConfig({}, 200_000);
+  assert.equal(defaults.preserveRecentMessages, 5);
+  assert.equal(defaults.preserveRecentTokens, 5000);
+  const cfg = resolveConfig({ preserveRecentMessages: 12, preserveRecentTokens: 0 }, 200_000);
+  assert.equal(cfg.preserveRecentMessages, 12);
+  assert.equal(cfg.preserveRecentTokens, 0, "0 turns the token rule off");
+  assert.deepEqual(validateConfig(cfg), []);
+  const host = resolveConfig({ preserveRecentTokens: 20_000, coreOverrides: { preserveRecentTokens: 0 } }, 200_000);
+  assert.equal(host.preserveRecentTokens, 0, "code-level coreOverrides still win");
 });

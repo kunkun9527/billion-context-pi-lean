@@ -121,6 +121,8 @@ All keys below are currently **ACTIVE**.
 | `protectedTools` | string\[\] | `none` | 🟢 ACTIVE | Tool-name patterns (glob suffix allowed) whose **every** call+result pair is hard-excluded from compression (refs render `BLOCKED`). For low-frequency, high-value tools with independent outputs — see the ⚠ note below. |
 | `protectedLatestTools` | string\[\] | `none` | 🟢 ACTIVE | Tool-name patterns (glob suffix allowed) whose **latest** call+result pair is hard-excluded from compression; older pairs remain compressible. For cumulative-snapshot tools. |
 | `neverPreserveRecentTools` | string\[\] | kernel built-in (`["decompress", "search_context", "read", "bash"]`, acp-kernel >= 0.0.92) | 🟢 ACTIVE | Tool-name patterns **removed from** the soft-protected recent zone so their results fold immediately. Default keeps `read`/`bash` compressible; remove only `read` (keep `decompress`/`search_context`) to stop the batch-read fold→re-read loop. **Empty array `[]` is valid** (max-protection escape hatch). |
+| `preserveRecentMessages` | integer ≥ 0 | `5` | 🟢 ACTIVE | Recent zone size in messages: the last N messages are kept out of compress ranges, and emergency truncation leaves the last N raw messages whole; N > 0 also keeps the latest user message. Also in the `/acp-config` panel (Recent messages). |
+| `preserveRecentTokens` | integer ≥ 0 | `5000` | 🟢 ACTIVE | Recent zone size in tokens: compress ranges also skip the newest messages until about this many tokens are covered; `0` turns this rule off. Emergency truncation ignores it. Also in the `/acp-config` panel (Recent tokens). |
 | `preserveRecentTools` | string\[\] | unset (no subtraction; requires `acp-kernel` >= 0.0.93) | 🟢 ACTIVE | The **positive counterpart**: tool-name patterns **kept protected** in the recent zone — removed from the effective exclusion list computed by the kernel. The one-entry remedy for the batch-read fold→re-read loop: `["read"]`, no built-in list restating. **Empty array `[]` is invalid** (pure no-op — typo for `neverPreserveRecentTools: []`). |
 | `throttleRetry` | boolean \| object | `true` | 🟢 ACTIVE | Auto-retry provider token rate-limit errors with progressive backoff. |
 | `repetitionGuard` | boolean \| object | `true` | 🟢 ACTIVE | Break infinite loops of byte-identical tool calls (warn at 3 consecutive, block + abort at 5). |
@@ -176,7 +178,7 @@ All keys below are currently **ACTIVE**.
 | `ACP_DEBUG` | Set to `1` / `true` to enable debug logging. |
 | `ACP_LOG_FILE` | Override the log file path (default `~/.pi/acp.log`). |
 
-> **Only the documented keys are read from `acp.json`.** Other tuning knobs (`preserveRecentMessages`) are code-level and not user-overridable. The three compression thresholds form a three-tier escalation: growth-driven soft nudges → forced nudges at `compress.maxContextLimit` → emergency truncation at `compress.emergencyThresholdPercent`.
+> **Only the documented keys are read from `acp.json`.** The three compression thresholds form a three-tier escalation: growth-driven soft nudges → forced nudges at `compress.maxContextLimit` → emergency truncation at `compress.emergencyThresholdPercent`.
 
 ---
 
@@ -249,7 +251,23 @@ All keys below are currently **ACTIVE**.
   { "preserveRecentTools": ["read"] }
   ```
 
-  without restating (or freezing a stale hand-copy of) the built-in list, and it keeps following built-in evolution. Composable with an explicit `neverPreserveRecentTools` (subtraction applies to the explicit list too); glob-suffix patterns subtract matching entries (`"bash*"` removes `bash`). **⚠ Empty array `[]` is INVALID** here — it is a pure no-op, so a bare `[]` is almost certainly a typo for `neverPreserveRecentTools: []` (the max-protection escape hatch); malformed values warn and fall back to the adapter value.
+  without restating (or freezing a stale hand-copy of) the built-in list, and it keeps following built-in evolution. Composable with an explicit `neverPreserveRecentTools` (subtraction applies to the explicit list too); glob-suffix patterns subtract matching entries (`"bash*"` removes `bash`). **⚠ Empty array `[]` is INVALID** here — it is a pure no-op, so a bare `[]` is almost certainly a typo for `neverPreserveRecentTools: []` (the max-protection escape hatch); malformed values warn and fall back to the adapter value. The `/acp-config` panel switch Protect recent reads adds or removes only `"read"` here (and, when turned off with an explicit `neverPreserveRecentTools` that lacks `read`, adds `read` there).
+
+---
+
+### `preserveRecentMessages`
+
+- **Type:** non-negative integer
+- **Default:** `5`
+- **Status:** 🟢 ACTIVE
+- **Description:** How many of the newest messages form the recent zone. Messages there stay visible: a compress range that reaches into them is cut back. Emergency truncation separately leaves the last N raw messages whole: it counts every message, including excluded tools, and ignores `preserveRecentTokens`. Each tool call and each tool result counts as one message (an assistant turn with three parallel calls is three); results of tools in the effective `neverPreserveRecentTools` list (built-in: `read`, `bash`, `decompress`, `search_context`) are neither counted nor protected. Above `0` the latest user message is protected too. Protection is the union of this rule, `preserveRecentTokens` and that user message. Global only; the `/acp-config` panel (Recent messages) writes it to the global acp.json. Values that are not non-negative integers warn and are ignored.
+
+### `preserveRecentTokens`
+
+- **Type:** non-negative integer (tokens)
+- **Default:** `5000`
+- **Status:** 🟢 ACTIVE
+- **Description:** Counting back from the newest message, messages are also protected until about this many tokens are covered (the message that crosses the mark is included). Same exclusions as `preserveRecentMessages`. `0` turns this rule off, leaving only `preserveRecentMessages`. Larger values keep more fresh tool output verbatim but leave less for compress to reclaim. Global only; the `/acp-config` panel (Recent tokens) writes it to the global acp.json.
 
 ---
 
@@ -455,7 +473,7 @@ The flow is:
 - **Type:** `number | string`
 - **Default:** `0.95` (or `"95%"`)
 - **Status:** 🟢 ACTIVE
-- **Description:** The context-usage threshold that triggers **emergency truncation** of large tool outputs to keep the session alive when context is nearly full. Accepts a ratio (`0.95`) or a percent string (`"95%"`). This value **must be greater than or equal to** `compress.maxContextLimit`, otherwise the escalation order breaks. Maps to the kernel settings `nudge.emergencyThresholdPct` and `truncate.threshold`.
+- **Description:** The context-usage threshold that triggers **emergency truncation** of large tool outputs to keep the session alive when context is nearly full. Accepts a ratio (`0.95`) or a percent string (`"95%"`). It should be greater than or equal to `compress.maxContextLimit`; when it is lower, the effective `maxContextLimit` is lowered to this value so the compress nudge never comes after emergency truncation. Maps to the kernel settings `nudge.emergencyThresholdPct` and `truncate.threshold`. The `/acp-config` panel (Emergency threshold) sets it for the current model.
 
 ### `compress.nudgeGrowthTokens`
 

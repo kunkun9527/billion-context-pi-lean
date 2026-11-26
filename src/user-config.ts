@@ -22,6 +22,8 @@ export interface UserAcpConfig {
   protectedLatestTools?: string[];
   neverPreserveRecentTools?: string[];
   preserveRecentTools?: string[];
+  preserveRecentMessages?: number;
+  preserveRecentTokens?: number;
   compress?: CompressConfig;
   outputHeadroomMaxPct?: number | string;
   throttleRetry?: boolean | ThrottleRetryConfig;
@@ -129,6 +131,7 @@ function diagnoseJsonFailure(raw: string, err: unknown): string {
 const KNOWN = new Set([
   "enabled", "debug", "modelContextLimit",
   "protectedTools", "protectedLatestTools", "neverPreserveRecentTools", "preserveRecentTools",
+  "preserveRecentMessages", "preserveRecentTokens",
   "compress", "throttleRetry", "idleCompact",
   "outputHeadroomMaxPct",
   "repetitionGuard", "degenerationGuard",
@@ -155,9 +158,17 @@ export function applyUserConfig(adapter: AdapterConfig, user: UserAcpConfig): Ad
     ...adapter,
     ...user,
     coreOverrides: adapter.coreOverrides,
-    preserveRecentMessages: adapter.preserveRecentMessages,
     externalSystemPrompt: adapter.externalSystemPrompt,
   };
+  // Recent-zone sizes: a hand-edited non-integer must not reach the kernel.
+  for (const key of ["preserveRecentMessages", "preserveRecentTokens"] as const) {
+    if (!(key in user)) continue;
+    const v = user[key];
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0) continue;
+    console.warn(`[bcp] acp.json "${key}" must be a non-negative integer — ignoring the value`);
+    if (adapter[key] !== undefined) result[key] = adapter[key];
+    else delete result[key];
+  }
   for (const key of ["protectedTools", "protectedLatestTools"] as const) {
     if (!(key in user)) continue;
     const cleaned = cleanProtectionList(key, user[key]);

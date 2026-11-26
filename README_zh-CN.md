@@ -96,21 +96,25 @@ ACP 不会自己动手压缩。已经做完的旧内容积累多了，它会在�
 
 ## 配置
 
-在 Pi 里输入 `/acp-config` 打开设置面板。上下键选设置项，Enter 或空格修改，Esc 关闭。改动立即生效，不用重启。
+在 Pi 里输入 `/acp-config` 打开设置面板。上下键选设置项；左右键在选项间前后切换（Enter 或空格往后切）；Esc 关闭。数字类设置还可以直接输入整数：在原位编辑，Enter 保存，Esc 取消。允许的范围写在说明下方；按模型生效的项清空后按 Enter 即 inherit。改动立即生效，不用重启。
 
 ### 设置项
 
-面板里按下表顺序列出，常用的在前。面板界面是英文的，括号里是中文意思。
+面板里按下表顺序列出，常用的在前。选中某项时，下方显示它的作用，默认值单独一行。面板界面是英文的，括号里是中文意思。
 
 | 设置 | 作用 | 默认 |
 |---|---|---|
 | Summary model（摘要模型） | 谁来写摘要。`main model`：主模型自己写。`session`：用当前模型单独调用一次，复用它的缓存前缀。也可以选 Pi 能用的任意模型（按 Enter 列出，可打字过滤），比如便宜的模型。这个模型调用失败时，这段不压缩，下次再试。 | `main model` |
 | Idle compact（空闲压缩） | 你离开时，趁提示缓存还没过期压缩一次（[工作方式](#空闲压缩idle-compact)）。 | `off` |
 | Idle minutes（空闲分钟数） | 会话空闲多久后才压缩。设得比所用模型的缓存时长略短：30 分钟缓存就用 29。 | 29 |
-| Context threshold（上下文阈值） | 上下文占到模型窗口的这个比例以上，压缩提醒不再等 Nudge interval：只要能腾出的空间达到 Minimum benefit 就提醒。调低让上下文常保小；调高允许它更满。它不是硬上限。 | 75% |
-| Nudge interval（提醒间隔） | 上下文没到 Context threshold 时，要等可压缩的旧内容攒到大约这么多 token 才提醒一次。调大：提醒少，每次压得多；调小：频繁小压缩，上下文更精简。 | 50K |
-| Minimum benefit（最小收益） | 能腾出的空间少于这个值时不提醒，也不做空闲压缩：只为几千 token 去重写、打断缓存不划算。 | 5K 与窗口 1% 中较大者 |
-| Claude fold anchor（Claude 折叠锚点） | 只对走 `*responses` API 的 Claude 模型生效：额外给下次压缩不会动到的那部分历史加缓存标记，折叠后它仍留在提示缓存里。选 `tool-output` 时也会标工具输出（需要 CLIProxyAPI 8.1.1 及以上，其他端点不一定支持）。其他模型忽略。保存为 `compress.claudeFoldAnchor`。 | `on` |
+| Context threshold（上下文阈值） | 上下文超过模型窗口的这个比例后，提醒压缩会变勤：只要能腾出 Minimum benefit 就提醒，不再等 Nudge interval。调低让上下文常保小；调高允许它更满。它不是硬上限，上下文仍可能超过它。 | 75% |
+| Emergency threshold（紧急阈值） | 最后一道保险。上下文占到窗口的这个比例时，较早的大工具输出和长消息直接剪成开头和结尾，不写摘要，防止上下文爆掉；最新的几条（条数同 Recent messages）不动。设得比 Context threshold 低时，Context threshold 也跟着降到这个值，提醒压缩不会晚于截断；两者相等时在同一轮发生。 | 95% |
+| Nudge interval（提醒间隔） | 上下文还没到 Context threshold 时，旧内容攒到大约这么多 token 才提醒一次压缩。调大：提醒少，每次压得多；调小：频繁小压缩，上下文更精简。 | 50K |
+| Minimum benefit（最小收益） | 能腾出的空间少于这个值时，不提醒压缩，也不做空闲压缩：只省几千 token，不值得打断缓存。 | 5K 与窗口 1% 中较大者 |
+| Recent messages（近期消息数） | 压缩时不准动最新的多少条消息。每个工具调用、每个结果各算一条。`read` 和 `bash` 的输出不算数，可以马上被折叠，因为重新读一遍、跑一遍很容易（想保留 read 就打开 Protect recent reads）。只要不是 0，你最近发的那条消息也保留。紧急截断同样不动最新这么多条，但所有消息都算数。 | 5 |
+| Recent tokens（近期 token 数） | 按体积再加一道保护：压缩时也不动最新的、合计约这么多 token 的消息。和 Recent messages 取覆盖得多的那个，跳过的工具也相同。0 关闭。紧急截断不看这一项。 | 5K |
+| Protect recent reads（保护刚读的文件） | 关：模型刚读的文件可以马上被折叠，和 `bash` 输出一样。开：最近读的结果和其他工具结果一样受保护，近期区会稍大一点。模型老是反复读同一个文件时打开。存为 `preserveRecentTools` 里的 `"read"`。 | `off` |
+| Claude fold anchor（Claude 折叠锚点） | 只对走 `*responses` API 的 Claude 模型生效。压缩后让提示缓存继续命中：给压缩不会动到的那部分历史打上缓存标记，下一次请求不用为它付全价。选 `tool-output` 时标记也可以打在工具输出上，通常能多缓存一些（需要 CLIProxyAPI 8.1.1 及以上，其他端点可能拒绝）。其他模型忽略。保存为 `compress.claudeFoldAnchor`。 | `on` |
 | Debug log（调试日志） | 在 `~/.pi/acp.log` 里额外记录详细事件，排查问题用。错误和主要事件始终会记。 | `off` |
 
 Context threshold、Nudge interval、Minimum benefit 跟模型的窗口和价格有关，所以面板只为**当前模型**设置它们；要改别的模型，先切换过去。选 `inherit`（继承）会去掉这个模型自己的值，改用 `acp.json` 里 provider 级或全局的值，都没有就用默认值。

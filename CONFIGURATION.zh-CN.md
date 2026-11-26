@@ -120,6 +120,8 @@
 | `protectedTools` | string\[\] | `无` | 🟢 ACTIVE | 工具名模式（支持 glob 后缀），其**所有** call+result 对都被硬排除在压缩之外（ref 渲染为 `BLOCKED`）。适用于低频高价值、输出为独立内容的工具——见下方 ⚠ 说明。 |
 | `protectedLatestTools` | string\[\] | `无` | 🟢 ACTIVE | 工具名模式（支持 glob 后缀），仅**最近一次** call+result 对被硬排除在压缩之外；更早的对仍可压缩。适用于累积快照型工具。 |
 | `neverPreserveRecentTools` | string\[\] | 内核内置（`["decompress", "search_context", "read", "bash"]`，需 acp-kernel >= 0.0.92） | 🟢 ACTIVE | 从软保护近期区**移除**的工具名模式，让它们的结果立即可压。默认让 `read`/`bash` 保持可压；只移除 `read`（保留 `decompress`/`search_context`）可解批量读文件的「折叠→重读」死循环。**空数组 `[]` 合法**（最大保护逃生门）。 |
+| `preserveRecentMessages` | 非负整数 | `5` | 🟢 ACTIVE | 近期区的消息条数：最近 N 条消息不进入压缩范围，紧急截断也不动最后 N 条原始消息；N > 0 时最近一条用户消息也受保护。`/acp-config` 面板里的 Recent messages 也能改。 |
+| `preserveRecentTokens` | 非负整数 | `5000` | 🟢 ACTIVE | 近期区的 token 数：压缩范围还会跳过从最新消息往回累计约这么多 token 的消息；`0` 关闭这条规则。紧急截断不看这一项。`/acp-config` 面板里的 Recent tokens 也能改。 |
 | `preserveRecentTools` | string\[\] | 未设置（不做减法；需 `acp-kernel` >= 0.0.93） | 🟢 ACTIVE | `neverPreserveRecentTools` 的**正向配对**：从内核计算的生效排除表中**移除**的工具名模式 —— 单条 `["read"]` 即批量读文件「折叠→重读」死循环的解法，无需重述内置列表。**空数组 `[]` 不合法**（纯无操作，是 `neverPreserveRecentTools: []` 的笔误）。 |
 | `throttleRetry` | boolean \| object | `true` | 🟢 ACTIVE | 自动重试 provider 侧 token 限流错误（递进退避）。 |
 | `repetitionGuard` | boolean \| object | `true` | 🟢 ACTIVE | 打断字节级完全相同的工具调用死循环（连续 3 次告警，连续 5 次拦截并中止本轮）。 |
@@ -177,7 +179,7 @@
 | `ACP_DEBUG` | 设为 `1` / `true` 开启调试日志。 |
 | `ACP_LOG_FILE` | 覆盖日志文件路径（默认 `~/.pi/acp.log`）。 |
 
-> **只有文档中列出的键才会从 `acp.json` 读取。** 其他调优参数（`preserveRecentMessages`）是代码级别的，不开放给用户。三个压缩阈值构成三级递进：基于增长的软 nudge → 越过 `compress.maxContextLimit` 后的强制 nudge → 越过 `compress.emergencyThresholdPercent` 后的紧急截断。
+> **只有文档中列出的键才会从 `acp.json` 读取。** 三个压缩阈值构成三级递进：基于增长的软 nudge → 越过 `compress.maxContextLimit` 后的强制 nudge → 越过 `compress.emergencyThresholdPercent` 后的紧急截断。
 
 ---
 
@@ -243,7 +245,23 @@
   { "preserveRecentTools": ["read"] }
   ```
 
-  既不用重述（也不用冻结一份很快过时的手抄）内置列表，还自动跟随内置列表演进。可与显式 `neverPreserveRecentTools` 组合（减法同样作用于显式列表）；通配后缀模式移除匹配项（`"bash*"` 移除 `bash`）。**⚠ 空数组 `[]` 在这里不合法** —— 它是纯无操作，裸 `[]` 几乎必然是 `neverPreserveRecentTools: []`（最大保护逃生门）的笔误；畸形值告警并回退到 adapter 值。
+  既不用重述（也不用冻结一份很快过时的手抄）内置列表，还自动跟随内置列表演进。可与显式 `neverPreserveRecentTools` 组合（减法同样作用于显式列表）；通配后缀模式移除匹配项（`"bash*"` 移除 `bash`）。**⚠ 空数组 `[]` 在这里不合法** —— 它是纯无操作，裸 `[]` 几乎必然是 `neverPreserveRecentTools: []`（最大保护逃生门）的笔误；畸形值告警并回退到 adapter 值。`/acp-config` 面板的 Protect recent reads 开关只在这里增删 `"read"`（关闭时若显式的 `neverPreserveRecentTools` 不含 `read`，也会把 `read` 加进那里）。
+
+---
+
+### `preserveRecentMessages`
+
+- **类型：** 非负整数
+- **默认值：** `5`
+- **状态：** 🟢 ACTIVE
+- **说明：** 近期区包含最新的多少条消息。近期区里的消息保持原样：压缩范围伸进来会被截回。紧急截断另外不动最后 N 条原始消息：它把所有消息都计数（包括排除的工具），也不看 `preserveRecentTokens`。每个工具调用、每个工具结果各算一条（一轮里并行调用三个工具算三条）；生效的 `neverPreserveRecentTools` 列表里的工具（内置：`read`、`bash`、`decompress`、`search_context`）既不计数，也不受保护。大于 `0` 时最近一条用户消息也受保护。最终保护范围是这条规则、`preserveRecentTokens` 和这条用户消息的并集。只有全局值；`/acp-config` 面板（Recent messages）写入全局 acp.json。不是非负整数的值会告警并被忽略。
+
+### `preserveRecentTokens`
+
+- **类型：** 非负整数（token）
+- **默认值：** `5000`
+- **状态：** 🟢 ACTIVE
+- **说明：** 从最新消息往回数，累计到大约这么多 token 为止的消息也受保护（跨过这个数的那条也算在内）。排除规则和 `preserveRecentMessages` 相同。`0` 关闭这条规则，只剩 `preserveRecentMessages`。调大能让更多刚产生的工具输出保持原样，但能压缩回收的就少了。只有全局值；`/acp-config` 面板（Recent tokens）写入全局 acp.json。
 
 ---
 
@@ -449,7 +467,7 @@
 - **类型：** `number | string`
 - **默认值：** `0.95`（或 `"95%"`）
 - **状态：** 🟢 ACTIVE
-- **说明：** 触发**紧急截断**的上下文用量阈值——在上下文即将满时截断大型工具输出以维持会话存活。接受比例值（`0.95`）或百分比字符串（`"95%"`）。此值**必须大于等于** `compress.maxContextLimit`，否则递进顺序会被破坏。映射到内核设置 `nudge.emergencyThresholdPct` 和 `truncate.threshold`。
+- **说明：** 触发**紧急截断**的上下文用量阈值——在上下文即将满时截断大型工具输出以维持会话存活。接受比例值（`0.95`）或百分比字符串（`"95%"`）。此值应大于等于 `compress.maxContextLimit`；低于它时，生效的 `maxContextLimit` 会降到这个值，保证压缩提醒不会晚于紧急截断。映射到内核设置 `nudge.emergencyThresholdPct` 和 `truncate.threshold`。`/acp-config` 面板（Emergency threshold）按当前模型设置。
 
 ### `compress.nudgeGrowthTokens`
 

@@ -146,7 +146,16 @@ export interface AdapterConfig {
      *  INVALID here (pure no-op — use neverPreserveRecentTools: [] for
      *  protect-everything instead). */
     preserveRecentTools?: string[];
+    /** Recent zone, rule 1: the last N visible messages (each tool call and
+     *  each tool result is one message; neverPreserveRecentTools results are
+     *  skipped) are kept out of compress ranges and emergency truncation.
+     *  N > 0 also protects the latest user message. Default 5. acp.json key. */
     preserveRecentMessages?: number;
+    /** Recent zone, rule 2: counting back from the newest visible message,
+     *  messages are protected until about this many tokens are covered.
+     *  0 disables the rule. Default: kernel default (5000). acp.json key;
+     *  coreOverrides.preserveRecentTokens still wins for code-level hosts. */
+    preserveRecentTokens?: number;
     /** Enable debug-level events in the ACP log file (default ~/.pi/acp.log).
      *  Always-on events (session/turn/compress lifecycle, all errors and
      *  warnings) are written regardless; `debug` only adds verbose diagnostics.
@@ -248,5 +257,7 @@ export declare function mergeCompress(global?: CompressSettings, provider?: Comp
  *  at any level. The Pi adapter keys providers by name (ctx.model.provider),
  *  not URL — it never sees the upstream URL the way the proxy does. */
 export declare function resolveCompress(compress: CompressConfig | undefined, provider: string | undefined, modelId: string | undefined): CompressSettings;
+export declare const DEFAULT_PRESERVE_RECENT_MESSAGES = 5;
+export declare const DEFAULT_PRESERVE_RECENT_TOKENS: number;
 export declare function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, provider?: string, modelId?: string): Config;
 export declare function parsePercent(v: number | string): number;
